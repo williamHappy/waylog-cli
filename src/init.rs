@@ -60,6 +60,9 @@ pub fn resolve_project_root(command: &Commands, output: &mut Output) -> Result<(
                 Ok((current, true))
             }
         },
+        Commands::Export { .. } | Commands::Publish { .. } | Commands::Watch { .. } => {
+            Ok((std::env::current_dir()?, false))
+        }
     }
 }
 

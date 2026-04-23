@@ -1,7 +1,9 @@
+mod archive;
 mod cli;
 mod commands;
 mod error;
 mod exporter;
+mod github;
 mod init;
 mod output;
 mod providers;
@@ -12,7 +14,7 @@ mod watcher;
 
 use clap::Parser;
 use cli::{Cli, Commands, OutputFormat};
-use commands::{handle_pull, handle_run};
+use commands::{handle_export, handle_publish, handle_pull, handle_run, handle_watch};
 use error::WaylogError;
 use output::Output;
 use std::io::Write;
@@ -31,13 +33,19 @@ async fn main() {
     let result = async {
         // 0. Validate provider for pull command BEFORE resolving project root
         // This ensures we catch invalid providers even if project is not initialized
-        if let Commands::Pull {
-            provider: Some(ref provider_name),
-            ..
-        } = cli.command
-        {
+        if let Some(provider_name) = match &cli.command {
+            Commands::Pull {
+                provider: Some(provider_name),
+                ..
+            } => Some(provider_name),
+            Commands::Export {
+                provider: Some(provider_name),
+                ..
+            } => Some(provider_name),
+            _ => None,
+        } {
             match providers::get_provider(provider_name) {
-                Ok(_) => {} // Provider is valid, continue
+                Ok(_) => {}
                 Err(WaylogError::ProviderNotFound(ref name)) => {
                     output.error(format!("'{}' is not a recognized provider.", name))?;
                     writeln!(output.stderr(), "\nAvailable providers:")?;
@@ -66,11 +74,47 @@ async fn main() {
 
         // 4. Dispatch command
         match cli.command {
-            Commands::Run { agent, args } => {
-                handle_run(agent, args, project_root, &mut output).await?;
+            Commands::Run {
+                agent,
+                archive_dir,
+                args,
+            } => {
+                handle_run(agent, archive_dir, args, project_root, &mut output).await?;
             }
             Commands::Pull { provider, force } => {
                 handle_pull(provider, force, cli.verbose, project_root, &mut output).await?;
+            }
+            Commands::Export {
+                provider,
+                archive_dir,
+                force,
+            } => {
+                handle_export(provider, archive_dir, force, &mut output).await?;
+            }
+            Commands::Watch {
+                provider,
+                archive_dir,
+            } => {
+                handle_watch(provider, archive_dir, &mut output).await?;
+            }
+            Commands::Publish {
+                archive_dir,
+                repo,
+                repo_path,
+                branch,
+                github_token_env,
+                message,
+            } => {
+                handle_publish(
+                    archive_dir,
+                    repo,
+                    repo_path,
+                    branch,
+                    github_token_env,
+                    message,
+                    &mut output,
+                )
+                .await?;
             }
         }
 

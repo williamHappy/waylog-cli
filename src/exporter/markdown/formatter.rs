@@ -70,7 +70,7 @@ pub(crate) fn extract_title(messages: &[ChatMessage]) -> String {
 
 /// Format datetime in a human-readable way
 pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
-    dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+    crate::utils::time::format_local_display_timestamp(dt)
 }
 
 #[cfg(test)]
@@ -170,7 +170,7 @@ mod tests {
         let messages = vec![create_test_message(with_emoji, MessageRole::User)];
         let title = extract_title(&messages);
         // Should not panic on emoji boundaries
-        assert!(title.len() > 0);
+        assert!(!title.is_empty());
     }
 
     #[test]

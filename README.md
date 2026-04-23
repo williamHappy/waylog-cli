@@ -14,6 +14,9 @@ WayLog CLI is a lightweight tool written in Rust that automatically saves your A
 ## ✨ Features
 
 - **🔄 Auto-Sync**: Real-time synchronization of chat history to `.waylog/history/` as you type.
+- **🗂 Unified Archive**: Export flattened `Markdown + raw session file` outputs plus centralized `indexes/` metadata into a reusable archive directory.
+- **👀 App Watch Mode**: Keep archiving sessions created by Claude App, Codex App, or native CLIs without wrapping them in `waylog run`.
+- **☁️ GitHub Publish**: Publish the archive directory to GitHub with a token, either interactively or by passing flags.
 - **📦 Full History Recovery**: The `pull` command scans your entire machine to recover past sessions into the current project.
 - **📝 Markdown Native**: All history is saved as high-quality Markdown files with frontmatter metadata.
 
@@ -52,6 +55,9 @@ Use `waylog run` instead of calling your AI tool directly. WayLog will launch th
 # Run Claude Code with auto-sync
 waylog run claude
 
+# Run Codex and mirror the session into a unified archive directory
+waylog run codex --archive-dir ~/waylog-archive
+
 # Run Gemini CLI
 waylog run gemini
 
@@ -73,6 +79,71 @@ Scans your local AI provider storage and "pulls" all relevant sessions into your
 waylog pull
 ```
 ![WayLog Pull Demo](demo/pull.gif)
+
+### 3. Host-wide Unified Archive (`export`)
+
+Scans local provider storage on the current machine and exports sessions into a flat archive view under `sessions/`, with readable filenames plus `.raw.*` companions and centralized indexes under `indexes/`.
+
+```bash
+# Export Claude + Codex + Gemini sessions to the default archive dir
+waylog export
+
+# Export only Codex sessions to a specific archive dir
+waylog export --provider codex --archive-dir ~/waylog-archive
+```
+
+### 4. Publish Archive To GitHub (`publish`)
+
+Uploads the archive directory to a GitHub repository using a token from an environment variable. This uses the GitHub API directly, so you do not need a local `git add/commit/push` workflow.
+
+```bash
+# Start interactive publishing and answer the prompts
+waylog publish
+
+# Or provide the repo directly and keep the token in an env var
+export GITHUB_TOKEN=ghp_xxx
+waylog publish --repo yourname/your-knowledge-repo
+
+# Publish a specific archive directory into a custom path in the repo
+waylog publish \
+  --archive-dir ~/waylog-archive \
+  --repo yourname/your-knowledge-repo \
+  --repo-path inbox/waylog \
+  --branch main
+```
+
+### 5. Watch App Sessions (`watch`)
+
+Use `watch` when you want WayLog to keep archiving sessions created outside `waylog run`, such as Codex App or Claude App.
+
+```bash
+# Watch all supported providers and keep the archive updated
+waylog watch --archive-dir ~/waylog-archive
+
+# Watch only Codex App / Codex local sessions
+waylog watch --provider codex --archive-dir ~/waylog-archive
+
+# Watch only Claude App / Claude local sessions
+waylog watch --provider claude --archive-dir ~/waylog-archive
+```
+
+### 6. Scheduled Publish
+
+`waylog publish` is designed to be called by external schedulers.
+
+macOS / Linux (`cron`):
+
+```bash
+0 2 * * * cd /path/to/project && /Users/you/.cargo/bin/waylog publish --archive-dir /Users/you/waylog-archive --repo yourname/your-knowledge-repo --repo-path waylog
+```
+
+Windows (Task Scheduler, `powershell.exe` arguments):
+
+```powershell
+-NoProfile -Command "Set-Location C:\path\to\project; $env:GITHUB_TOKEN='ghp_xxx'; waylog publish --archive-dir C:\Users\you\waylog-archive --repo yourname/your-knowledge-repo --repo-path waylog"
+```
+
+On Windows, WayLog also honors `CLAUDE_CONFIG_DIR` for Claude local data discovery if you keep Claude's session data outside the default `~/.claude` location.
 
 ## 📂 Supported Providers
 

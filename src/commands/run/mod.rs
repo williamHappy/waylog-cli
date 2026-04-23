@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 
 pub async fn handle_run(
     agent: Option<String>,
+    archive_dir: Option<PathBuf>,
     args: Vec<String>,
     project_path: PathBuf,
     output: &mut Output,
@@ -43,7 +44,7 @@ pub async fn handle_run(
     }
 
     // Now run_agent can focus on execution without validation
-    run_agent(args, project_path, provider).await?;
+    run_agent(args, project_path, provider, archive_dir).await?;
 
     Ok(())
 }
@@ -52,6 +53,7 @@ async fn run_agent(
     args: Vec<String>,
     project_path: PathBuf,
     provider: Arc<dyn providers::base::Provider>,
+    archive_dir: Option<PathBuf>,
 ) -> Result<()> {
     // Provider is already validated in handle_run, so we can focus on execution
     tracing::info!("Starting {} in {}", provider.name(), project_path.display());
@@ -67,8 +69,12 @@ async fn run_agent(
         Arc::new(session::SessionTracker::new(project_path.clone(), provider.clone()).await?);
 
     // Create file watcher
-    let watcher =
-        watcher::FileWatcher::new(provider.clone(), project_path.clone(), tracker.clone());
+    let watcher = watcher::FileWatcher::new(
+        provider.clone(),
+        project_path.clone(),
+        tracker.clone(),
+        archive_dir.clone(),
+    );
 
     // Start file watcher in background
     let watcher_handle: JoinHandle<()> = tokio::spawn(async move {
@@ -154,7 +160,7 @@ async fn run_agent(
                     &tracker,
                     &provider,
                     &project_path,
-                    &waylog_dir,
+                    archive_dir.as_deref(),
                     Some(status),
                 )
                 .await?;
@@ -178,7 +184,7 @@ async fn run_agent(
                     &tracker,
                     &provider,
                     &project_path,
-                    &waylog_dir,
+                    archive_dir.as_deref(),
                     Some(status),
                 )
                 .await?;
@@ -195,7 +201,7 @@ async fn run_agent(
                     &tracker,
                     &provider,
                     &project_path,
-                    &waylog_dir,
+                    archive_dir.as_deref(),
                     Some(status),
                 )
                 .await?;
@@ -228,7 +234,7 @@ async fn run_agent(
                         &tracker,
                         &provider,
                         &project_path,
-                        &waylog_dir,
+                        archive_dir.as_deref(),
                         Some(status),
                     )
                     .await?;
@@ -248,7 +254,7 @@ async fn run_agent(
                     &tracker,
                     &provider,
                     &project_path,
-                    &waylog_dir,
+                    archive_dir.as_deref(),
                     Some(status),
                 )
                 .await?;
@@ -265,7 +271,7 @@ async fn run_agent(
                     &tracker,
                     &provider,
                     &project_path,
-                    &waylog_dir,
+                    archive_dir.as_deref(),
                     Some(status),
                 )
                 .await?;
@@ -355,6 +361,10 @@ mod tests {
             Ok(self.sessions.keys().cloned().collect())
         }
 
+        async fn get_all_host_sessions(&self) -> Result<Vec<PathBuf>> {
+            Ok(self.sessions.keys().cloned().collect())
+        }
+
         fn is_installed(&self) -> bool {
             true
         }
@@ -437,7 +447,7 @@ mod tests {
             &tracker,
             &provider,
             &project_path,
-            &waylog_dir,
+            None,
             None,
         )
         .await;
@@ -495,12 +505,65 @@ mod tests {
             &tracker,
             &provider,
             &project_path,
-            &waylog_dir,
+            None,
             None,
         )
         .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_and_sync_recovers_when_latest_session_pointer_is_stale() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_path = temp_dir.path().to_path_buf();
+        let waylog_dir = utils::path::get_waylog_dir(&project_path);
+        utils::path::ensure_dir_exists(&waylog_dir).unwrap();
+
+        let mut mock_provider = MockProvider::new("test");
+        let old_session_file = temp_dir.path().join("old-session.json");
+        let new_session_file = temp_dir.path().join("new-session.json");
+
+        let old_session = create_test_session("session-old", 2);
+        let new_session = create_test_session("session-new", 3);
+
+        mock_provider.add_session(old_session_file.clone(), old_session);
+        mock_provider.add_session(new_session_file.clone(), new_session.clone());
+        mock_provider.latest_session = Some(old_session_file);
+
+        let provider: Arc<dyn providers::base::Provider> = Arc::new(mock_provider);
+        let tracker = Arc::new(
+            session::SessionTracker::new(project_path.clone(), provider.clone())
+                .await
+                .unwrap(),
+        );
+
+        let watcher_handle = tokio::spawn(async {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        });
+
+        #[cfg(windows)]
+        let mut child = TokioCommand::new("cmd")
+            .args(["/C", "echo", "test"])
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let mut child = TokioCommand::new("echo").arg("test").spawn().unwrap();
+        let _ = child.wait().await;
+
+        let result = cleanup::cleanup_and_sync(
+            &watcher_handle,
+            &mut child,
+            &tracker,
+            &provider,
+            &project_path,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(tracker.get_synced_count("session-new").await, 3);
     }
 
     #[tokio::test]
@@ -542,6 +605,10 @@ mod tests {
                 Ok(vec![])
             }
 
+            async fn get_all_host_sessions(&self) -> Result<Vec<PathBuf>> {
+                Ok(vec![])
+            }
+
             fn is_installed(&self) -> bool {
                 true
             }
@@ -578,7 +645,7 @@ mod tests {
             &tracker,
             &provider,
             &project_path,
-            &waylog_dir,
+            None,
             None,
         )
         .await;

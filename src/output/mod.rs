@@ -117,7 +117,7 @@ impl Output {
         let json = serde_json::json!({
             "level": level,
             "message": message,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "timestamp": crate::utils::time::format_local_rfc3339(&chrono::Utc::now()),
         });
         writeln!(self.stdout, "{}", json)?;
         Ok(())

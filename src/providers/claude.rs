@@ -38,31 +38,36 @@ impl Provider for ClaudeProvider {
 
     async fn get_all_sessions(&self, project_path: &Path) -> Result<Vec<PathBuf>> {
         let session_dir = self.session_dir(project_path)?;
+        self.collect_sessions_in_dir(&session_dir).await
+    }
 
-        if !session_dir.exists() {
+    async fn get_all_host_sessions(&self) -> Result<Vec<PathBuf>> {
+        let base_dir = self.data_dir()?;
+
+        if !base_dir.exists() {
             return Ok(Vec::new());
         }
 
-        // Find all .jsonl files
-        let mut entries = fs::read_dir(&session_dir).await?;
         let mut candidates = Vec::new();
+        for entry in walkdir::WalkDir::new(&base_dir) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
 
-        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                // Filter main sessions
-                if self.is_main_session(&path).await.unwrap_or(false) {
-                    let metadata = fs::metadata(&path).await?;
-                    let modified = metadata.modified()?;
-                    candidates.push((path, modified));
-                }
+            if path.is_file()
+                && path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                && self.is_main_session(path).await.unwrap_or(false)
+            {
+                let metadata = fs::metadata(path).await?;
+                let modified = metadata.modified()?;
+                candidates.push((path.to_path_buf(), modified));
             }
         }
 
-        // Sort by modification time, newest first
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-        Ok(candidates.into_iter().map(|(p, _)| p).collect())
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        Ok(candidates.into_iter().map(|(path, _)| path).collect())
     }
 
     async fn parse_session(&self, file_path: &Path) -> Result<ChatSession> {
@@ -128,6 +133,29 @@ impl Provider for ClaudeProvider {
 }
 
 impl ClaudeProvider {
+    async fn collect_sessions_in_dir(&self, session_dir: &Path) -> Result<Vec<PathBuf>> {
+        if !session_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = fs::read_dir(session_dir).await?;
+        let mut candidates = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                && self.is_main_session(&path).await.unwrap_or(false)
+            {
+                let metadata = fs::metadata(&path).await?;
+                let modified = metadata.modified()?;
+                candidates.push((path, modified));
+            }
+        }
+
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        Ok(candidates.into_iter().map(|(path, _)| path).collect())
+    }
+
     fn parse_message(&self, event: ClaudeEvent) -> Result<Option<ChatMessage>> {
         let role = match event.event_type.as_str() {
             "user" => MessageRole::User,
@@ -363,7 +391,6 @@ struct ClaudeUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::base::{MessageRole, Provider};
 
     // Helper to create a user message event with content
     fn create_user_event(content: &str) -> ClaudeEvent {

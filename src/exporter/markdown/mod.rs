@@ -17,11 +17,11 @@ pub fn generate_markdown(session: &ChatSession) -> String {
     md.push_str(&format!("project: {}\n", session.project_path.display()));
     md.push_str(&format!(
         "started_at: {}\n",
-        session.started_at.to_rfc3339()
+        crate::utils::time::format_local_rfc3339(&session.started_at)
     ));
     md.push_str(&format!(
         "updated_at: {}\n",
-        session.updated_at.to_rfc3339()
+        crate::utils::time::format_local_rfc3339(&session.updated_at)
     ));
     md.push_str(&format!("message_count: {}\n", session.messages.len()));
 
@@ -167,12 +167,16 @@ mod tests {
     // format_datetime tests
     #[test]
     fn test_format_datetime() {
-        use chrono::DateTime;
+        use chrono::{DateTime, Local};
         let dt = DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let formatted = formatter::format_datetime(&dt);
-        assert_eq!(formatted, "2024-01-01 12:00:00 UTC");
+        let expected = dt
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S %:z")
+            .to_string();
+        assert_eq!(formatted, expected);
     }
 
     // format_message tests

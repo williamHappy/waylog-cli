@@ -81,49 +81,21 @@ impl Provider for CodexProvider {
         }
 
         // Sort by modification time, newest first
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
         Ok(candidates.into_iter().next().map(|(p, _)| p))
     }
 
     async fn get_all_sessions(&self, project_path: &Path) -> Result<Vec<PathBuf>> {
-        let base_session_dir = self.data_dir()?;
+        self.collect_sessions(Some(project_path)).await
+    }
 
-        if !base_session_dir.exists() {
-            return Ok(Vec::new());
-        }
+    async fn get_all_host_sessions(&self) -> Result<Vec<PathBuf>> {
+        self.collect_sessions(None).await
+    }
 
-        // Recursively find all .jsonl files in the base session directory
-        let mut candidates = Vec::new();
-        let walker = walkdir::WalkDir::new(&base_session_dir);
-
-        for entry in walker {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                // Probe the file for project path match
-                if self
-                    .probe_project_path(path, project_path)
-                    .await
-                    .unwrap_or(false)
-                {
-                    if let Ok(metadata) = fs::metadata(path).await {
-                        if let Ok(modified) = metadata.modified() {
-                            candidates.push((path.to_path_buf(), modified));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort by modification time, newest first
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-        Ok(candidates.into_iter().map(|(p, _)| p).collect())
+    fn has_local_data(&self) -> bool {
+        self.data_dir().map(|dir| dir.exists()).unwrap_or(false)
     }
 
     async fn parse_session(&self, file_path: &Path) -> Result<ChatSession> {
@@ -202,6 +174,46 @@ impl Provider for CodexProvider {
 }
 
 impl CodexProvider {
+    async fn collect_sessions(&self, project_path: Option<&Path>) -> Result<Vec<PathBuf>> {
+        let base_session_dir = self.data_dir()?;
+
+        if !base_session_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut candidates = Vec::new();
+        let walker = walkdir::WalkDir::new(&base_session_dir);
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                let matches_scope = match project_path {
+                    Some(project_path) => self
+                        .probe_project_path(path, project_path)
+                        .await
+                        .unwrap_or(false),
+                    None => true,
+                };
+
+                if matches_scope {
+                    if let Ok(metadata) = fs::metadata(path).await {
+                        if let Ok(modified) = metadata.modified() {
+                            candidates.push((path.to_path_buf(), modified));
+                        }
+                    }
+                }
+            }
+        }
+
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        Ok(candidates.into_iter().map(|(path, _)| path).collect())
+    }
+
     async fn probe_project_path(
         &self,
         file_path: &Path,

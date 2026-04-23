@@ -37,28 +37,33 @@ impl Provider for GeminiProvider {
 
     async fn get_all_sessions(&self, project_path: &Path) -> Result<Vec<PathBuf>> {
         let session_dir = self.session_dir(project_path)?;
+        self.collect_sessions_in_dir(&session_dir).await
+    }
 
-        if !session_dir.exists() {
+    async fn get_all_host_sessions(&self) -> Result<Vec<PathBuf>> {
+        let base_dir = self.data_dir()?;
+
+        if !base_dir.exists() {
             return Ok(Vec::new());
         }
 
-        // Find all .json files
-        let mut entries = fs::read_dir(&session_dir).await?;
         let mut candidates = Vec::new();
+        for entry in walkdir::WalkDir::new(&base_dir) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
 
-        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                let metadata = fs::metadata(&path).await?;
+            if path.is_file() && Self::is_chat_session_file(path) {
+                let metadata = fs::metadata(path).await?;
                 let modified = metadata.modified()?;
-                candidates.push((path, modified));
+                candidates.push((path.to_path_buf(), modified));
             }
         }
 
-        // Sort by modification time, newest first
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-        Ok(candidates.into_iter().map(|(p, _)| p).collect())
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        Ok(candidates.into_iter().map(|(path, _)| path).collect())
     }
 
     async fn parse_session(&self, file_path: &Path) -> Result<ChatSession> {
@@ -105,9 +110,43 @@ impl Provider for GeminiProvider {
     fn command(&self) -> &str {
         "gemini"
     }
+
+    fn raw_extension(&self) -> &str {
+        "json"
+    }
 }
 
 impl GeminiProvider {
+    fn is_chat_session_file(path: &Path) -> bool {
+        path.extension().and_then(|s| s.to_str()) == Some("json")
+            && path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                == Some("chats")
+    }
+
+    async fn collect_sessions_in_dir(&self, session_dir: &Path) -> Result<Vec<PathBuf>> {
+        if !session_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = fs::read_dir(session_dir).await?;
+        let mut candidates = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if Self::is_chat_session_file(&path) {
+                let metadata = fs::metadata(&path).await?;
+                let modified = metadata.modified()?;
+                candidates.push((path, modified));
+            }
+        }
+
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        Ok(candidates.into_iter().map(|(path, _)| path).collect())
+    }
+
     fn parse_message(&self, msg: GeminiMessage) -> Result<Option<ChatMessage>> {
         let role = match msg.message_type.as_str() {
             "user" => MessageRole::User,
@@ -150,6 +189,25 @@ impl GeminiProvider {
                 thoughts,
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GeminiProvider;
+    use std::path::Path;
+
+    #[test]
+    fn test_is_chat_session_file_only_matches_chats_directory() {
+        assert!(GeminiProvider::is_chat_session_file(Path::new(
+            "/tmp/project-hash/chats/session-1.json"
+        )));
+        assert!(!GeminiProvider::is_chat_session_file(Path::new(
+            "/tmp/project-hash/logs.json"
+        )));
+        assert!(!GeminiProvider::is_chat_session_file(Path::new(
+            "/tmp/settings.json"
+        )));
     }
 }
 

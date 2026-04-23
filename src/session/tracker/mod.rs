@@ -172,6 +172,10 @@ mod tests {
             Ok(self.sessions.keys().cloned().collect())
         }
 
+        async fn get_all_host_sessions(&self) -> Result<Vec<PathBuf>> {
+            Ok(self.sessions.keys().cloned().collect())
+        }
+
         fn is_installed(&self) -> bool {
             true
         }

@@ -75,9 +75,22 @@ pub trait Provider: Send + Sync {
     /// Get all session files for a specific project
     async fn get_all_sessions(&self, project_path: &Path) -> Result<Vec<PathBuf>>;
 
+    /// Get all session files available on the host
+    async fn get_all_host_sessions(&self) -> Result<Vec<PathBuf>>;
+
     /// Check if the CLI tool is installed
     fn is_installed(&self) -> bool;
 
+    /// Check if the provider has local session data available
+    fn has_local_data(&self) -> bool {
+        self.data_dir().map(|dir| dir.exists()).unwrap_or(false)
+    }
+
     /// Get the command to run the CLI tool
     fn command(&self) -> &str;
+
+    /// Get the raw session file extension without leading dot
+    fn raw_extension(&self) -> &str {
+        "jsonl"
+    }
 }

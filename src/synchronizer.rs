@@ -12,6 +12,7 @@ pub struct Synchronizer {
     provider: Arc<dyn Provider>,
     project_dir: PathBuf,
     tracker: Arc<SessionTracker>,
+    archive_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,11 +28,13 @@ impl Synchronizer {
         provider: Arc<dyn Provider>,
         project_dir: PathBuf,
         tracker: Arc<SessionTracker>,
+        archive_dir: Option<PathBuf>,
     ) -> Self {
         Self {
             provider,
             project_dir,
             tracker,
+            archive_dir,
         }
     }
 
@@ -78,7 +81,8 @@ impl Synchronizer {
                     .map(|m| crate::utils::string::slugify(&m.content))
                     .unwrap_or_else(|| session.session_id.clone());
 
-                let timestamp = session.started_at.format("%Y-%m-%d_%H-%M-%SZ");
+                let timestamp =
+                    crate::utils::time::format_local_filename_timestamp(&session.started_at);
                 let filename = format!("{}-{}-{}.md", timestamp, self.provider.name(), slug);
                 let path = path::get_waylog_dir(&self.project_dir).join(filename);
 
@@ -116,6 +120,13 @@ impl Synchronizer {
             exporter::create_markdown_file(&markdown_path, &session).await?;
         } else {
             exporter::append_messages(&markdown_path, &new_messages).await?;
+        }
+
+        if let Some(archive_dir) = &self.archive_dir {
+            let writer = crate::archive::ArchiveWriter::new(archive_dir.clone());
+            writer
+                .export_session(&session, session_path, self.provider.raw_extension())
+                .await?;
         }
 
         // 6. Update state

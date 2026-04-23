@@ -13,12 +13,16 @@ pub fn home_dir() -> Result<PathBuf> {
 /// On Unix: ~/.{tool}
 /// On Windows: %USERPROFILE%\.{tool} (future extension point)
 pub fn get_ai_data_dir(tool_name: &str) -> Result<PathBuf> {
+    if tool_name == "claude" {
+        if let Some(path) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+            return Ok(PathBuf::from(path));
+        }
+    }
+
     let home = home_dir()?;
 
     #[cfg(target_os = "windows")]
     {
-        // Windows: Use AppData\Local for application data (future extension)
-        // For now, keep it simple and use home directory
         Ok(home.join(format!(".{}", tool_name)))
     }
 
@@ -63,6 +67,11 @@ pub fn encode_path_gemini(path: &Path) -> String {
 /// Get the .waylog/history directory for the current project
 pub fn get_waylog_dir(project_dir: &Path) -> PathBuf {
     project_dir.join(WAYLOG_DIR).join(subdirs::HISTORY)
+}
+
+/// Get the default unified archive directory
+pub fn get_default_archive_dir() -> Result<PathBuf> {
+    Ok(home_dir()?.join("waylog-archive"))
 }
 
 /// Find the project root by looking for .waylog folder or .git folder
@@ -212,6 +221,22 @@ mod tests {
     }
 
     #[test]
+    fn test_get_ai_data_dir_honors_claude_config_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let expected = temp_dir.path().join("claude-config");
+        unsafe {
+            std::env::set_var("CLAUDE_CONFIG_DIR", &expected);
+        }
+
+        let actual = get_ai_data_dir("claude").unwrap();
+        assert_eq!(actual, expected);
+
+        unsafe {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+    }
+
+    #[test]
     fn test_get_waylog_dir() {
         let project_dir = std::env::temp_dir().join("test-project");
         let waylog_dir = get_waylog_dir(&project_dir);
@@ -304,7 +329,7 @@ mod tests {
         // Restore original working directory
         // If the original directory no longer exists (e.g., in parallel test execution),
         // try to restore to home directory as a fallback
-        if let Err(_) = std::env::set_current_dir(&original_dir) {
+        if std::env::set_current_dir(&original_dir).is_err() {
             // Fallback to home directory if original directory is gone
             if let Ok(home) = home_dir() {
                 let _ = std::env::set_current_dir(&home);

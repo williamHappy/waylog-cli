@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::{exporter, providers, session};
+use crate::{providers, session, synchronizer::Synchronizer};
 use std::sync::Arc;
 use tokio::process::Child;
 use tokio::task::JoinHandle;
@@ -19,7 +19,7 @@ pub(crate) async fn cleanup_and_sync(
     tracker: &Arc<session::SessionTracker>,
     provider: &Arc<dyn providers::base::Provider>,
     project_path: &std::path::Path,
-    waylog_dir: &std::path::Path,
+    archive_dir: Option<&std::path::Path>,
     _exit_status: Option<std::process::ExitStatus>,
 ) -> Result<()> {
     // Stop the file watcher
@@ -31,58 +31,14 @@ pub(crate) async fn cleanup_and_sync(
     // Do a final sync
     tracing::info!("Session ended, performing final sync...");
 
-    if let Ok(Some(session_file)) = provider.find_latest_session(project_path).await {
-        if let Ok((session, new_messages)) = tracker.get_new_messages(&session_file).await {
-            if !new_messages.is_empty() {
-                tracing::info!("Syncing {} final messages", new_messages.len());
-
-                let markdown_path =
-                    if let Some(existing) = tracker.get_markdown_path(&session.session_id).await {
-                        existing
-                    } else {
-                        let slug = session
-                            .messages
-                            .iter()
-                            .find(|m| m.role == crate::providers::base::MessageRole::User)
-                            .map(|m| crate::utils::string::slugify(&m.content))
-                            .unwrap_or_else(|| session.session_id.clone());
-
-                        let timestamp = session.started_at.format("%Y-%m-%d_%H-%M-%SZ");
-                        let filename = format!("{}-{}-{}.md", timestamp, provider.name(), slug);
-                        waylog_dir.join(filename)
-                    };
-
-                let synced_count = tracker.get_synced_count(&session.session_id).await;
-
-                // Perform sync - errors are logged but don't stop cleanup
-                match (synced_count == 0, &markdown_path) {
-                    (true, path) => {
-                        if let Err(e) = exporter::create_markdown_file(path, &session).await {
-                            tracing::error!("Failed to create markdown file: {}", e);
-                        }
-                    }
-                    (false, path) => {
-                        if let Err(e) = exporter::append_messages(path, &new_messages).await {
-                            tracing::error!("Failed to append messages: {}", e);
-                        }
-                    }
-                }
-
-                if let Err(e) = tracker
-                    .update_session(
-                        session.session_id.clone(),
-                        session_file,
-                        markdown_path.clone(),
-                        session.messages.len(),
-                    )
-                    .await
-                {
-                    tracing::error!("Failed to update session: {}", e);
-                } else {
-                    tracing::info!("✓ Final sync complete: {}", markdown_path.display());
-                }
-            }
-        }
+    let synchronizer = Synchronizer::new(
+        provider.clone(),
+        project_path.to_path_buf(),
+        tracker.clone(),
+        archive_dir.map(|path| path.to_path_buf()),
+    );
+    if let Err(error) = synchronizer.sync_all(false).await {
+        tracing::error!("Failed final sync: {}", error);
     }
 
     // Save final state - errors are logged but don't stop cleanup

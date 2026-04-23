@@ -44,8 +44,8 @@ pub async fn handle_pull(
     let mut total_uptodate = 0;
 
     for provider in providers_to_sync {
-        if !provider.is_installed() {
-            debug!("Skipping {} (not installed)", provider.name());
+        if !provider.has_local_data() {
+            debug!("Skipping {} (no local data found)", provider.name());
             continue;
         }
 
@@ -56,6 +56,7 @@ pub async fn handle_pull(
             provider.clone(),
             project_path.clone(),
             tracker.clone(),
+            None,
         );
 
         match synchronizer.sync_all(force).await {

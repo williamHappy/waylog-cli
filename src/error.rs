@@ -8,6 +8,9 @@ pub enum WaylogError {
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
     #[error("Provider not found: {0}")]
     ProviderNotFound(String),
 
@@ -41,7 +44,7 @@ impl WaylogError {
             // Input file/resource errors
             WaylogError::ProjectNotFound | WaylogError::Io(_) => exitcode::NOINPUT,
             // Service unavailable
-            WaylogError::AgentNotInstalled(_) => exitcode::UNAVAILABLE,
+            WaylogError::AgentNotInstalled(_) | WaylogError::Http(_) => exitcode::UNAVAILABLE,
             // Internal software errors
             WaylogError::PathError(_) | WaylogError::Internal(_) => exitcode::SOFTWARE,
             // Child process exit code (propagate directly)
