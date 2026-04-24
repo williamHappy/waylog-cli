@@ -8,6 +8,7 @@ mod init;
 mod output;
 mod providers;
 mod session;
+mod session_filter;
 pub mod synchronizer;
 mod utils;
 mod watcher;

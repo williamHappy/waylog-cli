@@ -48,6 +48,7 @@ pub async fn handle_watch(
             _ = interval.tick() => {
                 let mut written = 0usize;
                 let mut unchanged = 0usize;
+                let mut filtered = 0usize;
 
                 for provider in &watched_providers {
                     if !provider.has_local_data() {
@@ -87,7 +88,15 @@ pub async fn handle_watch(
                                 continue;
                             }
                         };
-                        if result.written {
+                        if let Some(reason) = result.filtered_reason {
+                            tracing::info!(
+                                "Filtered {} session {} from archive watch sync: {}",
+                                provider.name(),
+                                session_path.display(),
+                                reason
+                            );
+                            filtered += 1;
+                        } else if result.written {
                             written += 1;
                         } else {
                             unchanged += 1;
@@ -95,10 +104,10 @@ pub async fn handle_watch(
                     }
                 }
 
-                if written > 0 {
+                if written > 0 || filtered > 0 {
                     output.info(format!(
-                        "Watch sync complete: {} updated, {} unchanged",
-                        written, unchanged
+                        "Watch sync complete: {} updated, {} unchanged, {} filtered",
+                        written, unchanged, filtered
                     ))?;
                 }
             }

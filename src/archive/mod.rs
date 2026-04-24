@@ -2,7 +2,8 @@ pub mod layout;
 pub mod meta;
 
 use crate::error::Result;
-use crate::providers::base::{ChatSession, MessageRole};
+use crate::providers::base::ChatSession;
+use crate::session_filter;
 use chrono::Utc;
 use meta::SessionIndexEntry;
 use serde::Serialize;
@@ -19,6 +20,7 @@ pub struct ArchiveExportResult {
     #[cfg_attr(not(test), allow(dead_code))]
     pub paths: layout::ArchivePaths,
     pub written: bool,
+    pub filtered_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,7 +43,7 @@ impl ArchiveWriter {
         source_path: &Path,
         raw_extension: &str,
     ) -> Result<ArchiveExportResult> {
-        let title = extract_title(session);
+        let title = session_filter::session_title(session);
         let stable_key = format!("{}:{}", session.provider, session.session_id);
         let readable_base = layout::build_readable_base(
             &session.started_at.to_rfc3339(),
@@ -50,6 +52,14 @@ impl ArchiveWriter {
             None,
         );
         let paths = layout::archive_paths(&self.archive_dir, &readable_base, raw_extension);
+
+        if let Some(reason) = session_filter::archive_skip_reason(session) {
+            return Ok(ArchiveExportResult {
+                paths,
+                written: false,
+                filtered_reason: Some(reason.to_string()),
+            });
+        }
 
         ensure_archive_dirs(&self.archive_dir).await?;
 
@@ -68,6 +78,7 @@ impl ArchiveWriter {
                 return Ok(ArchiveExportResult {
                     paths,
                     written: false,
+                    filtered_reason: None,
                 });
             }
         }
@@ -104,6 +115,7 @@ impl ArchiveWriter {
         Ok(ArchiveExportResult {
             paths,
             written: true,
+            filtered_reason: None,
         })
     }
 }
@@ -177,17 +189,6 @@ async fn write_manifest(
     let manifest_path = archive_dir.join("indexes").join("manifest.json");
     fs::write(manifest_path, serde_json::to_vec_pretty(&manifest)?).await?;
     Ok(())
-}
-
-fn extract_title(session: &ChatSession) -> String {
-    session
-        .messages
-        .iter()
-        .find(|message| matches!(message.role, MessageRole::User))
-        .and_then(|message| message.content.lines().next())
-        .filter(|line| !line.trim().is_empty())
-        .unwrap_or("Untitled Session")
-        .to_string()
 }
 
 #[cfg(test)]
@@ -273,6 +274,7 @@ mod tests {
 
         assert!(first.written);
         assert!(!second.written);
+        assert!(second.filtered_reason.is_none());
     }
 
     #[tokio::test]
@@ -298,5 +300,56 @@ mod tests {
             .unwrap();
 
         assert!(!legacy_meta_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_archive_writer_filters_noise_sessions() {
+        let temp_dir = TempDir::new().unwrap();
+        let raw_path = temp_dir.path().join("source.jsonl");
+        tokio::fs::write(&raw_path, "{\"type\":\"response_item\"}\n")
+            .await
+            .unwrap();
+
+        let now = Utc::now();
+        let noisy_session = ChatSession {
+            session_id: "session-noise".to_string(),
+            provider: "codex".to_string(),
+            project_path: PathBuf::from("/tmp/project"),
+            started_at: now,
+            updated_at: now,
+            messages: vec![
+                ChatMessage {
+                    id: "1".to_string(),
+                    timestamp: now,
+                    role: MessageRole::User,
+                    content: "hi".to_string(),
+                    metadata: MessageMetadata::default(),
+                },
+                ChatMessage {
+                    id: "2".to_string(),
+                    timestamp: now,
+                    role: MessageRole::Assistant,
+                    content: "hello".to_string(),
+                    metadata: MessageMetadata::default(),
+                },
+            ],
+        };
+
+        let writer = ArchiveWriter::new(temp_dir.path().to_path_buf());
+        let result = writer
+            .export_session(&noisy_session, &raw_path, "jsonl")
+            .await
+            .unwrap();
+
+        assert!(!result.written);
+        assert_eq!(
+            result.filtered_reason.as_deref(),
+            Some("trivial greeting session")
+        );
+        assert!(!temp_dir
+            .path()
+            .join("indexes")
+            .join("sessions.jsonl")
+            .exists());
     }
 }

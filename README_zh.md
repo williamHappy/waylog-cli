@@ -75,6 +75,14 @@ waylog pull
 
 扫描当前主机上的本地 AI 会话目录，并把会话平铺导出到统一归档目录。每条会话会生成可读文件名的 `.md`、`.raw.*`，会话级元数据集中写入 `indexes/`。
 
+在写入归档前，WayLog 会默认排除一批低价值会话：
+
+- `hi` / `hello` 这类纯问候
+- `exit`、`whoami` 这类探测式命令会话
+- 空的 `Untitled Session`
+- `agents-instructions` / `context-from-my-ide-setup` 这类只有样板上下文的会话
+- 专门用于生成 git commit message 的会话
+
 ```bash
 # 导出全部支持供应商的会话到默认归档目录
 waylog export
@@ -106,6 +114,8 @@ waylog publish \
 ### 5. 监听 App 会话 (`watch`)
 
 如果你不是通过 `waylog run` 启动，而是直接使用 Codex App、Claude App 或原生命令行，可以用 `watch` 持续监听本地会话目录并归档。
+
+这里会复用和 `export` 相同的默认归档过滤规则，所以这些明显的测试/样板会话不会进入你的知识库目录。
 
 ```bash
 # 监听所有支持的供应商

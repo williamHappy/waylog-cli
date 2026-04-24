@@ -84,6 +84,14 @@ waylog pull
 
 Scans local provider storage on the current machine and exports sessions into a flat archive view under `sessions/`, with readable filenames plus `.raw.*` companions and centralized indexes under `indexes/`.
 
+Before writing to the archive, WayLog skips a default set of low-value sessions:
+
+- trivial greetings like `hi` / `hello`
+- shell probes like `exit` or `whoami`
+- empty `Untitled Session` records
+- boilerplate-only setup prompts such as `agents-instructions` / `context-from-my-ide-setup`
+- dedicated git commit message generator chats
+
 ```bash
 # Export Claude + Codex + Gemini sessions to the default archive dir
 waylog export
@@ -115,6 +123,8 @@ waylog publish \
 ### 5. Watch App Sessions (`watch`)
 
 Use `watch` when you want WayLog to keep archiving sessions created outside `waylog run`, such as Codex App or Claude App.
+
+`watch` uses the same archive filter as `export`, so these noisy setup/test sessions are skipped before they enter your knowledge-base archive.
 
 ```bash
 # Watch all supported providers and keep the archive updated

@@ -36,6 +36,7 @@ pub async fn handle_export(
 
     let mut written = 0usize;
     let mut skipped = 0usize;
+    let mut filtered = 0usize;
 
     for provider in providers_to_export {
         if !provider.has_local_data() {
@@ -78,7 +79,15 @@ pub async fn handle_export(
                 }
             };
 
-            if result.written || force {
+            if let Some(reason) = result.filtered_reason {
+                tracing::info!(
+                    "Filtered {} session {} from archive: {}",
+                    provider.name(),
+                    session_path.display(),
+                    reason
+                );
+                filtered += 1;
+            } else if result.written || force {
                 written += 1;
             } else {
                 skipped += 1;
@@ -87,8 +96,8 @@ pub async fn handle_export(
     }
 
     output.info(format!(
-        "Archive export complete: {} written, {} unchanged",
-        written, skipped
+        "Archive export complete: {} written, {} unchanged, {} filtered",
+        written, skipped, filtered
     ))?;
     Ok(())
 }

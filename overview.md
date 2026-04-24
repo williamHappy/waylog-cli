@@ -80,6 +80,7 @@ waylog-cli/
 │   │   └── tracker/
 │   │       ├── mod.rs            # 会话同步状态管理
 │   │       └── restore.rs        # 从已有 Markdown frontmatter 恢复状态
+│   ├── session_filter.rs         # 统一归档噪音会话过滤规则
 │   ├── exporter/
 │   │   ├── mod.rs                # 导出入口
 │   │   ├── frontmatter.rs        # frontmatter 解析
@@ -289,6 +290,7 @@ waylog publish --repo yourname/your-knowledge-repo
 - `sessions/` 只保留人类可读的正文和原始会话文件。
 - `indexes/sessions.jsonl` 统一保存每条会话的元数据、源文件信息和增量判断字段。
 - `indexes/manifest.json` 保存归档摘要，例如更新时间、会话总数、provider 列表、归档版本。
+- 归档前会自动过滤一批低价值会话，例如纯问候、`agents-instructions`、`context-from-my-ide-setup`、shell 探测和 commit-message 生成对话。
 
 ## 五. 系统架构及模块
 

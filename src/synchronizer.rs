@@ -124,9 +124,17 @@ impl Synchronizer {
 
         if let Some(archive_dir) = &self.archive_dir {
             let writer = crate::archive::ArchiveWriter::new(archive_dir.clone());
-            writer
+            let result = writer
                 .export_session(&session, session_path, self.provider.raw_extension())
                 .await?;
+            if let Some(reason) = result.filtered_reason {
+                debug!(
+                    "Skipped archive export for {} session {}: {}",
+                    self.provider.name(),
+                    session.session_id,
+                    reason
+                );
+            }
         }
 
         // 6. Update state
