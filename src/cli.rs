@@ -27,6 +27,12 @@ pub enum OutputFormat {
     Json,
 }
 
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub enum Browser {
+    Chrome,
+    Atlas,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run an AI CLI tool and automatically sync its chat history
@@ -60,6 +66,14 @@ pub enum Commands {
         #[arg(short, long)]
         provider: Option<String>,
 
+        /// Specific browser history source to export
+        #[arg(long, value_enum)]
+        browser: Option<Browser>,
+
+        /// Skip browser history export even when it is enabled by default
+        #[arg(long, conflicts_with = "browser")]
+        no_browser: bool,
+
         /// Output archive directory
         #[arg(long)]
         archive_dir: Option<std::path::PathBuf>,
@@ -74,6 +88,14 @@ pub enum Commands {
         /// Specific provider to watch (if not specified, watches all supported providers)
         #[arg(short, long)]
         provider: Option<String>,
+
+        /// Specific browser history source to watch
+        #[arg(long, value_enum)]
+        browser: Option<Browser>,
+
+        /// Skip browser history watch even when it is enabled by default
+        #[arg(long, conflicts_with = "browser")]
+        no_browser: bool,
 
         /// Output archive directory
         #[arg(long)]
@@ -181,12 +203,116 @@ mod tests {
             Commands::Watch {
                 provider,
                 archive_dir,
+                browser,
+                no_browser,
             } => {
                 assert_eq!(provider.as_deref(), Some("claude"));
                 assert_eq!(
                     archive_dir.as_deref(),
                     Some(std::path::Path::new("/tmp/archive"))
                 );
+                assert!(browser.is_none());
+                assert!(!no_browser);
+            }
+            _ => panic!("expected watch command"),
+        }
+    }
+
+    #[test]
+    fn test_export_parses_browser_flag() {
+        let cli = Cli::parse_from(["waylog", "export", "--browser", "chrome"]);
+
+        match cli.command {
+            Commands::Export {
+                provider,
+                archive_dir,
+                force,
+                browser,
+                no_browser,
+            } => {
+                assert!(provider.is_none());
+                assert!(archive_dir.is_none());
+                assert!(!force);
+                assert_eq!(browser, Some(Browser::Chrome));
+                assert!(!no_browser);
+            }
+            _ => panic!("expected export command"),
+        }
+    }
+
+    #[test]
+    fn test_watch_parses_browser_and_provider_together() {
+        let cli = Cli::parse_from([
+            "waylog",
+            "watch",
+            "--provider",
+            "codex",
+            "--browser",
+            "chrome",
+        ]);
+
+        match cli.command {
+            Commands::Watch {
+                provider,
+                archive_dir,
+                browser,
+                no_browser,
+            } => {
+                assert_eq!(provider.as_deref(), Some("codex"));
+                assert!(archive_dir.is_none());
+                assert_eq!(browser, Some(Browser::Chrome));
+                assert!(!no_browser);
+            }
+            _ => panic!("expected watch command"),
+        }
+    }
+
+    #[test]
+    fn test_export_parses_atlas_browser_flag() {
+        let cli = Cli::parse_from(["waylog", "export", "--browser", "atlas"]);
+
+        match cli.command {
+            Commands::Export {
+                browser,
+                no_browser,
+                ..
+            } => {
+                assert_eq!(browser, Some(Browser::Atlas));
+                assert!(!no_browser);
+            }
+            _ => panic!("expected export command"),
+        }
+    }
+
+    #[test]
+    fn test_export_parses_no_browser_flag() {
+        let cli = Cli::parse_from(["waylog", "export", "--no-browser"]);
+
+        match cli.command {
+            Commands::Export {
+                browser,
+                no_browser,
+                ..
+            } => {
+                assert!(browser.is_none());
+                assert!(no_browser);
+            }
+            _ => panic!("expected export command"),
+        }
+    }
+
+    #[test]
+    fn test_watch_parses_no_browser_flag() {
+        let cli = Cli::parse_from(["waylog", "watch", "--no-browser"]);
+
+        match cli.command {
+            Commands::Watch {
+                browser,
+                no_browser,
+                ..
+            } => {
+                assert!(browser.is_none());
+                assert!(no_browser);
             }
             _ => panic!("expected watch command"),
         }

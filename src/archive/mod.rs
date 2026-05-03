@@ -1,11 +1,13 @@
+pub mod browser;
 pub mod layout;
 pub mod meta;
 
 use crate::error::Result;
 use crate::providers::base::ChatSession;
 use crate::session_filter;
-use chrono::Utc;
-use meta::SessionIndexEntry;
+use crate::utils::time;
+use chrono::{DateTime, Utc};
+use meta::{BrowserHistoryIndexEntry, SessionIndexEntry};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,6 +30,8 @@ struct ArchiveManifest {
     updated_at: String,
     session_count: usize,
     providers: Vec<String>,
+    browser_sources: Vec<String>,
+    browser_record_count: usize,
     archive_version: u32,
     latest_session: String,
 }
@@ -71,7 +75,7 @@ impl ArchiveWriter {
             .map(crate::utils::time::format_system_time_as_local_rfc3339)
             .unwrap_or_else(|| crate::utils::time::format_local_rfc3339(&session.updated_at));
 
-        let mut index_entries = read_index_entries(&self.archive_dir).await?;
+        let mut index_entries = read_session_index_entries(&self.archive_dir).await?;
         if let Some(existing_entry) = index_entries.get(&stable_key) {
             if !existing_entry.should_rewrite(&source_mtime, source_size, session.messages.len()) {
                 remove_legacy_meta_file(&paths.markdown_path).await?;
@@ -109,8 +113,8 @@ impl ArchiveWriter {
         };
 
         index_entries.insert(stable_key.clone(), entry);
-        write_index_entries(&self.archive_dir, &index_entries).await?;
-        write_manifest(&self.archive_dir, &index_entries, &stable_key).await?;
+        write_session_index_entries(&self.archive_dir, &index_entries).await?;
+        refresh_manifest(&self.archive_dir, Some(stable_key)).await?;
 
         Ok(ArchiveExportResult {
             paths,
@@ -134,7 +138,9 @@ async fn remove_legacy_meta_file(markdown_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn read_index_entries(archive_dir: &Path) -> Result<BTreeMap<String, SessionIndexEntry>> {
+pub(crate) async fn read_session_index_entries(
+    archive_dir: &Path,
+) -> Result<BTreeMap<String, SessionIndexEntry>> {
     let index_path = archive_dir.join("indexes").join("sessions.jsonl");
     if !index_path.exists() {
         return Ok(BTreeMap::new());
@@ -150,7 +156,7 @@ async fn read_index_entries(archive_dir: &Path) -> Result<BTreeMap<String, Sessi
     Ok(entries)
 }
 
-async fn write_index_entries(
+pub(crate) async fn write_session_index_entries(
     archive_dir: &Path,
     entries: &BTreeMap<String, SessionIndexEntry>,
 ) -> Result<()> {
@@ -167,28 +173,110 @@ async fn write_index_entries(
     Ok(())
 }
 
-async fn write_manifest(
+pub(crate) async fn read_browser_index_entries(
     archive_dir: &Path,
-    entries: &BTreeMap<String, SessionIndexEntry>,
-    latest_session: &str,
+) -> Result<BTreeMap<String, BrowserHistoryIndexEntry>> {
+    let index_path = archive_dir.join("indexes").join("browser-history.jsonl");
+    if !index_path.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let content = fs::read_to_string(index_path).await?;
+    let mut entries = BTreeMap::new();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let entry: BrowserHistoryIndexEntry = serde_json::from_str(line)?;
+        entries.insert(entry.stable_key.clone(), entry);
+    }
+
+    Ok(entries)
+}
+
+pub(crate) async fn write_browser_index_entries(
+    archive_dir: &Path,
+    entries: &BTreeMap<String, BrowserHistoryIndexEntry>,
 ) -> Result<()> {
-    let mut providers = entries
+    let index_path = archive_dir.join("indexes").join("browser-history.jsonl");
+    let mut lines = Vec::with_capacity(entries.len());
+    for entry in entries.values() {
+        lines.push(serde_json::to_string(entry)?);
+    }
+    let mut content = lines.join("\n");
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    fs::write(index_path, content).await?;
+    Ok(())
+}
+
+pub(crate) async fn refresh_manifest(
+    archive_dir: &Path,
+    latest_session_override: Option<String>,
+) -> Result<()> {
+    let session_entries = read_session_index_entries(archive_dir).await?;
+    let browser_entries = read_browser_index_entries(archive_dir).await?;
+
+    let mut providers = session_entries
         .values()
         .map(|entry| entry.provider.clone())
         .collect::<Vec<_>>();
     providers.sort();
     providers.dedup();
 
+    let mut browser_sources = browser_entries
+        .values()
+        .map(|entry| entry.browser.clone())
+        .collect::<Vec<_>>();
+    browser_sources.sort();
+    browser_sources.dedup();
+
+    let browser_record_count = browser_entries
+        .values()
+        .map(|entry| entry.record_count)
+        .sum::<usize>();
+
+    let latest_session = latest_session_override
+        .or_else(|| latest_session_key(&session_entries))
+        .unwrap_or_default();
+
     let manifest = ArchiveManifest {
-        updated_at: crate::utils::time::format_local_rfc3339(&Utc::now()),
-        session_count: entries.len(),
+        updated_at: time::format_local_rfc3339(&Utc::now()),
+        session_count: session_entries.len(),
         providers,
-        archive_version: 2,
-        latest_session: latest_session.to_string(),
+        browser_sources,
+        browser_record_count,
+        archive_version: 3,
+        latest_session,
     };
     let manifest_path = archive_dir.join("indexes").join("manifest.json");
     fs::write(manifest_path, serde_json::to_vec_pretty(&manifest)?).await?;
     Ok(())
+}
+
+pub(crate) fn latest_browser_visit_per_source_profile(
+    entries: &BTreeMap<String, BrowserHistoryIndexEntry>,
+) -> std::collections::HashMap<String, DateTime<Utc>> {
+    let mut latest_by_profile = std::collections::HashMap::new();
+
+    for entry in entries.values() {
+        let Ok(visited_at) = DateTime::parse_from_rfc3339(&entry.latest_visit_at) else {
+            continue;
+        };
+        let visited_at = visited_at.with_timezone(&Utc);
+        latest_by_profile
+            .entry(format!("{}:{}", entry.browser, entry.profile))
+            .and_modify(|current| {
+                if visited_at > *current {
+                    *current = visited_at;
+                }
+            })
+            .or_insert(visited_at);
+    }
+
+    latest_by_profile
+}
+
+fn latest_session_key(entries: &BTreeMap<String, SessionIndexEntry>) -> Option<String> {
+    entries.keys().last().cloned()
 }
 
 #[cfg(test)]

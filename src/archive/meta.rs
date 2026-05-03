@@ -30,6 +30,21 @@ impl SessionIndexEntry {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserHistoryIndexEntry {
+    pub stable_key: String,
+    pub browser: String,
+    pub profile: String,
+    pub date: String,
+    pub record_count: usize,
+    pub latest_visit_at: String,
+    pub source_path: String,
+    pub source_mtime: String,
+    pub markdown_path: String,
+    pub raw_path: String,
+    pub exported_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +114,26 @@ mod tests {
 
         let changed = old_meta.should_rewrite("2026-04-24T19:00:00+08:00", 100, 10);
         assert!(!changed);
+    }
+
+    #[test]
+    fn test_browser_index_stores_expected_fields() {
+        let entry = BrowserHistoryIndexEntry {
+            stable_key: "chrome:Default:2026-05-03".to_string(),
+            browser: "chrome".to_string(),
+            profile: "Default".to_string(),
+            date: "2026-05-03".to_string(),
+            record_count: 5,
+            latest_visit_at: "2026-05-03T12:00:00+08:00".to_string(),
+            source_path: "/tmp/History".to_string(),
+            source_mtime: "2026-05-03T12:05:00+08:00".to_string(),
+            markdown_path: "browser-history/2026-05-03_chrome_default.md".to_string(),
+            raw_path: "browser-history/2026-05-03_chrome_default.raw.jsonl".to_string(),
+            exported_at: "2026-05-03T12:06:00+08:00".to_string(),
+        };
+
+        assert_eq!(entry.browser, "chrome");
+        assert_eq!(entry.profile, "Default");
+        assert_eq!(entry.record_count, 5);
     }
 }

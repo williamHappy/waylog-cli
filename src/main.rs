@@ -1,4 +1,5 @@
 mod archive;
+mod browser;
 mod cli;
 mod commands;
 mod error;
@@ -87,16 +88,28 @@ async fn main() {
             }
             Commands::Export {
                 provider,
+                browser,
+                no_browser,
                 archive_dir,
                 force,
             } => {
-                handle_export(provider, archive_dir, force, &mut output).await?;
+                handle_export(
+                    provider,
+                    browser,
+                    no_browser,
+                    archive_dir,
+                    force,
+                    &mut output,
+                )
+                .await?;
             }
             Commands::Watch {
                 provider,
+                browser,
+                no_browser,
                 archive_dir,
             } => {
-                handle_watch(provider, archive_dir, &mut output).await?;
+                handle_watch(provider, browser, no_browser, archive_dir, &mut output).await?;
             }
             Commands::Publish {
                 archive_dir,

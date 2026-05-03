@@ -87,6 +87,10 @@ waylog pull
 
 Scans local provider storage on the current machine and exports sessions into a flat archive view under `sessions/`, with readable filenames plus `.raw.*` companions and centralized indexes under `indexes/`.
 
+WayLog now exports browser history into `browser-history/` by default alongside AI sessions. It currently supports Chrome and ChatGPT Atlas on macOS, plus Chrome on Windows. Browser history collection copies locked History databases to temp files before reading them and captures visit-level history records only. It does not capture page-level clickstream or tab focus behavior.
+
+If your browser history is already synced across devices and you only want one machine to archive it, use `--no-browser` on other machines to export AI sessions without browser history.
+
 Before writing to the archive, WayLog skips a default set of low-value sessions:
 
 - trivial greetings like `hi` / `hello`
@@ -96,11 +100,23 @@ Before writing to the archive, WayLog skips a default set of low-value sessions:
 - dedicated git commit message generator chats
 
 ```bash
-# Export Claude + Codex + Gemini sessions to the default archive dir
+# Export all default sources to the default archive dir
 waylog export
 
-# Export only Codex sessions to a specific archive dir
+# Export only Codex AI sessions plus default browser history to a specific archive dir
 waylog export --provider codex --archive-dir ~/waylog-archive
+
+# Export AI sessions only and skip browser history
+waylog export --no-browser --archive-dir ~/waylog-archive
+
+# Export Chrome browser history explicitly
+waylog export --browser chrome --archive-dir ~/waylog-archive
+
+# Export Atlas browser history explicitly
+waylog export --browser atlas --archive-dir ~/waylog-archive
+
+# Export both Codex sessions and Atlas browser history together
+waylog export --provider codex --browser atlas --archive-dir ~/waylog-archive
 ```
 
 ### 4. Publish Archive To GitHub (`publish`)
@@ -129,15 +145,31 @@ Use `watch` when you want WayLog to keep archiving sessions created outside `way
 
 `watch` uses the same archive filter as `export`, so these noisy setup/test sessions are skipped before they enter your knowledge-base archive.
 
+`watch` also polls supported browser history every 30 seconds by default and appends new visit records into the same archive root. `--browser chrome` and `--browser atlas` remain available as explicit forms.
+
+If you want a machine to keep syncing AI sessions but never archive browser history, run `watch --no-browser`.
+
 ```bash
-# Watch all supported providers and keep the archive updated
+# Watch all default sources and keep the archive updated
 waylog watch --archive-dir ~/waylog-archive
+
+# Watch AI sessions only and skip browser history
+waylog watch --no-browser --archive-dir ~/waylog-archive
 
 # Watch only Codex App / Codex local sessions
 waylog watch --provider codex --archive-dir ~/waylog-archive
 
 # Watch only Claude App / Claude local sessions
 waylog watch --provider claude --archive-dir ~/waylog-archive
+
+# Watch Chrome browser history only
+waylog watch --browser chrome --archive-dir ~/waylog-archive
+
+# Watch Atlas browser history only
+waylog watch --browser atlas --archive-dir ~/waylog-archive
+
+# Watch both Codex sessions and Atlas browser history
+waylog watch --provider codex --browser atlas --archive-dir ~/waylog-archive
 ```
 
 ### 6. Scheduled Publish

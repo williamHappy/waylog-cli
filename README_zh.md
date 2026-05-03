@@ -78,6 +78,10 @@ waylog pull
 
 扫描当前主机上的本地 AI 会话目录，并把会话平铺导出到统一归档目录。每条会话会生成可读文件名的 `.md`、`.raw.*`，会话级元数据集中写入 `indexes/`。
 
+现在 WayLog 默认也会把浏览器历史一起导出到 `browser-history/`。当前支持 macOS 上的 Chrome 和 ChatGPT Atlas，以及 Windows 上的 Chrome，会先复制被锁定的 History 数据库再读取，采集的是 visit 级浏览历史，不包含页面内点击流、标签页焦点或停留时长。
+
+如果你的 Chrome 历史已经通过账户在多设备间同步，只希望其中一台机器负责归档浏览器历史，可以在其他机器上使用 `--no-browser`，只归档 AI 会话。
+
 在写入归档前，WayLog 会默认排除一批低价值会话：
 
 - `hi` / `hello` 这类纯问候
@@ -87,11 +91,23 @@ waylog pull
 - 专门用于生成 git commit message 的会话
 
 ```bash
-# 导出全部支持供应商的会话到默认归档目录
+# 导出默认所有来源到默认归档目录
 waylog export
 
-# 仅导出 Codex 会话到指定归档目录
+# 导出 Codex AI 会话，并同时包含默认浏览器历史
 waylog export --provider codex --archive-dir ~/waylog-archive
+
+# 只导出 AI 会话，跳过浏览器历史
+waylog export --no-browser --archive-dir ~/waylog-archive
+
+# 显式导出 Chrome 浏览历史
+waylog export --browser chrome --archive-dir ~/waylog-archive
+
+# 显式导出 Atlas 浏览历史
+waylog export --browser atlas --archive-dir ~/waylog-archive
+
+# 同时导出 Codex 会话和 Atlas 浏览历史
+waylog export --provider codex --browser atlas --archive-dir ~/waylog-archive
 ```
 
 ### 4. 上传归档到 GitHub (`publish`)
@@ -120,15 +136,31 @@ waylog publish \
 
 这里会复用和 `export` 相同的默认归档过滤规则，所以这些明显的测试/样板会话不会进入你的知识库目录。
 
+`watch` 默认也会每 30 秒轮询一次已支持的浏览器历史，并把新增浏览记录追加到同一个 archive 根目录里。`--browser chrome` 和 `--browser atlas` 仍然可以作为显式写法保留。
+
+如果你希望某台机器只同步 AI 会话、不归档浏览器历史，可以使用 `watch --no-browser`。
+
 ```bash
-# 监听所有支持的供应商
+# 监听默认所有来源
 waylog watch --archive-dir ~/waylog-archive
+
+# 只监听 AI 会话，跳过浏览器历史
+waylog watch --no-browser --archive-dir ~/waylog-archive
 
 # 仅监听 Codex App / Codex 本地会话
 waylog watch --provider codex --archive-dir ~/waylog-archive
 
 # 仅监听 Claude App / Claude 本地会话
 waylog watch --provider claude --archive-dir ~/waylog-archive
+
+# 仅监听 Chrome 浏览历史
+waylog watch --browser chrome --archive-dir ~/waylog-archive
+
+# 仅监听 Atlas 浏览历史
+waylog watch --browser atlas --archive-dir ~/waylog-archive
+
+# 同时监听 Codex 会话和 Atlas 浏览历史
+waylog watch --provider codex --browser atlas --archive-dir ~/waylog-archive
 ```
 
 ### 6. 定时发布

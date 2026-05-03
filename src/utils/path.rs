@@ -201,6 +201,11 @@ mod tests {
 
     #[test]
     fn test_get_ai_data_dir_format() {
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        unsafe {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+
         let dir = get_ai_data_dir("claude").unwrap();
         let dir_str = dir.to_string_lossy();
 
@@ -210,6 +215,12 @@ mod tests {
         // Should be under home directory
         let home = home_dir().unwrap();
         assert!(dir.starts_with(&home));
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var("CLAUDE_CONFIG_DIR", value);
+            }
+        }
     }
 
     #[test]
@@ -280,8 +291,9 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::create_dir_all(project_root.join(".waylog")).unwrap();
 
-        // Save current working directory
-        let original_dir = std::env::current_dir().unwrap();
+        // Save current working directory, but fall back if a previous parallel test
+        // left us in a deleted temp directory.
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| home_dir().unwrap());
 
         // Switch to subdirectory
         std::env::set_current_dir(&subdir).unwrap();
@@ -302,7 +314,11 @@ mod tests {
         );
 
         // Restore original working directory
-        std::env::set_current_dir(&original_dir).unwrap();
+        if std::env::set_current_dir(&original_dir).is_err() {
+            if let Ok(home) = home_dir() {
+                let _ = std::env::set_current_dir(&home);
+            }
+        }
     }
 
     #[test]
