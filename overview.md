@@ -22,6 +22,10 @@ WayLog CLI 是一个使用 Rust 编写的本地命令行工具，用于把 Claud
 - 支持把归档目录通过 GitHub token 发布到知识库仓库。
 - 用统一抽象屏蔽不同 AI CLI / App 的存储结构差异。
 
+补充阅读：
+
+- [macOS / Windows 快速使用指南](docs/quickstart-macos-windows.md)
+
 ### 3. 项目价值
 
 - 为项目建立长期可追溯的 AI 协作日志。
