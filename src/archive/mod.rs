@@ -8,6 +8,7 @@ use crate::session_filter;
 use crate::utils::time;
 use chrono::{DateTime, Utc};
 use meta::{BrowserHistoryIndexEntry, SessionIndexEntry};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -138,6 +139,34 @@ async fn remove_legacy_meta_file(markdown_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn parse_jsonl_entries<T>(content: &str, label: &str) -> Vec<T>
+where
+    T: DeserializeOwned,
+{
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            match serde_json::from_str(trimmed) {
+                Ok(entry) => Some(entry),
+                Err(error) => {
+                    tracing::warn!(
+                        "Skipping malformed {label} JSONL line {}: {}",
+                        index + 1,
+                        error
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 pub(crate) async fn read_session_index_entries(
     archive_dir: &Path,
 ) -> Result<BTreeMap<String, SessionIndexEntry>> {
@@ -148,8 +177,7 @@ pub(crate) async fn read_session_index_entries(
 
     let content = fs::read_to_string(index_path).await?;
     let mut entries = BTreeMap::new();
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        let entry: SessionIndexEntry = serde_json::from_str(line)?;
+    for entry in parse_jsonl_entries::<SessionIndexEntry>(&content, "session index") {
         entries.insert(entry.stable_key.clone(), entry);
     }
 
@@ -183,8 +211,7 @@ pub(crate) async fn read_browser_index_entries(
 
     let content = fs::read_to_string(index_path).await?;
     let mut entries = BTreeMap::new();
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        let entry: BrowserHistoryIndexEntry = serde_json::from_str(line)?;
+    for entry in parse_jsonl_entries::<BrowserHistoryIndexEntry>(&content, "browser index") {
         entries.insert(entry.stable_key.clone(), entry);
     }
 
@@ -439,5 +466,30 @@ mod tests {
             .join("indexes")
             .join("sessions.jsonl")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn test_read_browser_index_entries_skips_malformed_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_dir = temp_dir.path().join("indexes");
+        tokio::fs::create_dir_all(&index_dir).await.unwrap();
+        tokio::fs::write(
+            index_dir.join("browser-history.jsonl"),
+            concat!(
+                "{\"stable_key\":\"chrome:Default:2026-05-03\",\"browser\":\"chrome\",\"profile\":\"Default\",\"date\":\"2026-05-03\",\"record_count\":1,\"latest_visit_at\":\"2026-05-03T10:00:00+08:00\",\"source_path\":\"/tmp/History\",\"source_mtime\":\"2026-05-03T10:00:00+08:00\",\"markdown_path\":\"browser-history/2026-05-03_chrome_default.md\",\"raw_path\":\"browser-history/2026-05-03_chrome_default.raw.jsonl\",\"exported_at\":\"2026-05-03T10:05:00+08:00\"}\n",
+                "{\"stable_key\":\n",
+                "{\"stable_key\":\"atlas:user-1:2026-05-03\",\"browser\":\"atlas\",\"profile\":\"user-1\",\"date\":\"2026-05-03\",\"record_count\":2,\"latest_visit_at\":\"2026-05-03T11:00:00+08:00\",\"source_path\":\"/tmp/AtlasHistory\",\"source_mtime\":\"2026-05-03T11:00:00+08:00\",\"markdown_path\":\"browser-history/2026-05-03_atlas_user-1.md\",\"raw_path\":\"browser-history/2026-05-03_atlas_user-1.raw.jsonl\",\"exported_at\":\"2026-05-03T11:05:00+08:00\"}\n"
+            ),
+        )
+        .await
+        .unwrap();
+
+        let entries = super::read_browser_index_entries(temp_dir.path())
+            .await
+            .unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key("chrome:Default:2026-05-03"));
+        assert!(entries.contains_key("atlas:user-1:2026-05-03"));
     }
 }

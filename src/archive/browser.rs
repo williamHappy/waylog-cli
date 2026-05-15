@@ -19,12 +19,19 @@ pub struct BrowserArchiveSummary {
     pub updated_groups: usize,
     pub unchanged_groups: usize,
     pub written_records: usize,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserArchivePaths {
     markdown_path: PathBuf,
     raw_path: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct RawRecordReadResult {
+    records: Vec<BrowserVisitRecord>,
+    warnings: Vec<String>,
 }
 
 impl BrowserArchiveWriter {
@@ -52,7 +59,9 @@ impl BrowserArchiveWriter {
             let stable_key = format!("{browser}:{profile}:{date}");
             let paths = browser_history_paths(&self.archive_dir, &date, &browser, &profile);
 
-            let existing_records = read_existing_records(&paths.raw_path).await?;
+            let existing = read_existing_records(&paths.raw_path).await?;
+            summary.warnings.extend(existing.warnings.clone());
+            let existing_records = existing.records;
             let existing_ids = existing_records
                 .iter()
                 .map(|record| record.record_id.clone())
@@ -168,17 +177,36 @@ fn dedupe_records(records: Vec<BrowserVisitRecord>) -> Vec<BrowserVisitRecord> {
     deduped
 }
 
-async fn read_existing_records(raw_path: &Path) -> Result<Vec<BrowserVisitRecord>> {
+async fn read_existing_records(raw_path: &Path) -> Result<RawRecordReadResult> {
     if !raw_path.exists() {
-        return Ok(Vec::new());
+        return Ok(RawRecordReadResult::default());
     }
 
     let content = fs::read_to_string(raw_path).await?;
     let mut records = Vec::new();
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        records.push(serde_json::from_str(line)?);
+    let mut warnings = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<BrowserVisitRecord>(trimmed) {
+                Ok(record) => records.push(record),
+                Err(error) => {
+                    let message = format!(
+                        "Skipping malformed browser raw JSONL line {} in {}: {}",
+                        index + 1,
+                        raw_path.display(),
+                        error
+                    );
+                    tracing::warn!("{message}");
+                    warnings.push(message);
+                }
+            }
     }
-    Ok(records)
+
+    Ok(RawRecordReadResult { records, warnings })
 }
 
 async fn write_raw_records(
@@ -363,5 +391,28 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(raw.lines().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_read_existing_records_skips_malformed_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let raw_path = temp_dir.path().join("browser-history.raw.jsonl");
+        fs::write(
+            &raw_path,
+            concat!(
+                "{\"record_id\":\"1\",\"browser\":\"chrome\",\"profile\":\"Default\",\"url\":\"https://example.com/1\",\"title\":\"Visit 1\",\"visited_at\":\"2026-05-03T10:00:00+08:00\",\"visit_count\":1,\"typed_count\":0,\"transition\":\"0\",\"referrer_visit_id\":null,\"source_db_path\":\"/tmp/History\"}\n",
+                "{\"record_id\":\n",
+                "{\"record_id\":\"2\",\"browser\":\"chrome\",\"profile\":\"Default\",\"url\":\"https://example.com/2\",\"title\":\"Visit 2\",\"visited_at\":\"2026-05-03T11:00:00+08:00\",\"visit_count\":1,\"typed_count\":0,\"transition\":\"0\",\"referrer_visit_id\":null,\"source_db_path\":\"/tmp/History\"}\n"
+            ),
+        )
+        .await
+        .unwrap();
+
+        let result = read_existing_records(&raw_path).await.unwrap();
+
+        assert_eq!(result.records.len(), 2);
+        assert_eq!(result.records[0].record_id, "1");
+        assert_eq!(result.records[1].record_id, "2");
+        assert_eq!(result.warnings.len(), 1);
     }
 }

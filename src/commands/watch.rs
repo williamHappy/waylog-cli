@@ -119,8 +119,14 @@ pub async fn handle_watch(
                     let existing_entries = read_browser_index_entries(&archive_dir).await?;
                     let since_by_profile =
                         latest_browser_visit_per_source_profile(&existing_entries);
-                    let visits = collector.collect_visits_since(&since_by_profile).await?;
-                    let summary = browser_writer.export_visits(&visits, false).await?;
+                    let collected = collector.collect_visits_since(&since_by_profile).await?;
+                    for warning in &collected.warnings {
+                        output.warn(warning)?;
+                    }
+                    let summary = browser_writer.export_visits(&collected.visits, false).await?;
+                    for warning in &summary.warnings {
+                        output.warn(warning)?;
+                    }
                     browser_updated = summary.updated_groups;
                     browser_unchanged = summary.unchanged_groups;
                 }

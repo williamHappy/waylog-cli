@@ -31,6 +31,9 @@ pub enum WaylogError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Invalid time range: {0}")]
+    InvalidTimeRange(String),
 }
 
 impl WaylogError {
@@ -46,7 +49,7 @@ impl WaylogError {
             // Service unavailable
             WaylogError::AgentNotInstalled(_) | WaylogError::Http(_) => exitcode::UNAVAILABLE,
             // Internal software errors
-            WaylogError::PathError(_) | WaylogError::Internal(_) => exitcode::SOFTWARE,
+            WaylogError::PathError(_) | WaylogError::Internal(_) | WaylogError::InvalidTimeRange(_) => exitcode::SOFTWARE,
             // Child process exit code (propagate directly)
             WaylogError::ChildProcessFailed(code) => *code,
         }
@@ -62,6 +65,7 @@ impl WaylogError {
             WaylogError::MissingAgent
                 | WaylogError::ProviderNotFound(_)
                 | WaylogError::AgentNotInstalled(_)
+                | WaylogError::InvalidTimeRange(_)
         )
     }
 }

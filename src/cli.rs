@@ -66,6 +66,18 @@ pub enum Commands {
         #[arg(short, long)]
         provider: Option<String>,
 
+        /// Export only sessions from a specific local date (YYYY-MM-DD)
+        #[arg(long, conflicts_with_all = ["from", "to"])]
+        date: Option<String>,
+
+        /// Export sessions updated at or after this timestamp/date
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Export sessions updated at or before this timestamp/date
+        #[arg(long)]
+        to: Option<String>,
+
         /// Specific browser history source to export
         #[arg(long, value_enum)]
         browser: Option<Browser>,
@@ -225,12 +237,18 @@ mod tests {
         match cli.command {
             Commands::Export {
                 provider,
+                date,
+                from,
+                to,
                 archive_dir,
                 force,
                 browser,
                 no_browser,
             } => {
                 assert!(provider.is_none());
+                assert!(date.is_none());
+                assert!(from.is_none());
+                assert!(to.is_none());
                 assert!(archive_dir.is_none());
                 assert!(!force);
                 assert_eq!(browser, Some(Browser::Chrome));
@@ -264,6 +282,41 @@ mod tests {
                 assert!(!no_browser);
             }
             _ => panic!("expected watch command"),
+        }
+    }
+
+    #[test]
+    fn test_export_parses_date_filter() {
+        let cli = Cli::parse_from(["waylog", "export", "--date", "2026-05-12"]);
+
+        match cli.command {
+            Commands::Export { date, from, to, .. } => {
+                assert_eq!(date.as_deref(), Some("2026-05-12"));
+                assert!(from.is_none());
+                assert!(to.is_none());
+            }
+            _ => panic!("expected export command"),
+        }
+    }
+
+    #[test]
+    fn test_export_parses_from_and_to_filters() {
+        let cli = Cli::parse_from([
+            "waylog",
+            "export",
+            "--from",
+            "2026-05-12",
+            "--to",
+            "2026-05-13T12:00:00Z",
+        ]);
+
+        match cli.command {
+            Commands::Export { date, from, to, .. } => {
+                assert!(date.is_none());
+                assert_eq!(from.as_deref(), Some("2026-05-12"));
+                assert_eq!(to.as_deref(), Some("2026-05-13T12:00:00Z"));
+            }
+            _ => panic!("expected export command"),
         }
     }
 

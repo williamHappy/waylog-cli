@@ -25,6 +25,12 @@ pub struct ChromiumHistoryCollector {
     sources: Vec<ChromiumSource>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserCollectionResult {
+    pub visits: Vec<BrowserVisitRecord>,
+    pub warnings: Vec<String>,
+}
+
 impl ChromiumHistoryCollector {
     pub fn new(selected_browser: Option<&Browser>) -> Result<Self> {
         Ok(Self {
@@ -42,7 +48,8 @@ impl ChromiumHistoryCollector {
         }
     }
 
-    pub fn discover_profiles(&self) -> Result<Vec<ChromiumProfileHistory>> {
+    #[cfg(test)]
+    fn discover_profiles(&self) -> Result<Vec<ChromiumProfileHistory>> {
         let mut profiles = Vec::new();
         for source in &self.sources {
             profiles.extend(discover_profiles_in_root(source)?);
@@ -58,23 +65,54 @@ impl ChromiumHistoryCollector {
     pub async fn collect_visits_since(
         &self,
         since_by_source_profile: &HashMap<String, DateTime<Utc>>,
-    ) -> Result<Vec<BrowserVisitRecord>> {
-        let profiles = self.discover_profiles()?;
+    ) -> Result<BrowserCollectionResult> {
         let mut visits = Vec::new();
+        let mut warnings = Vec::new();
 
-        for profile in profiles {
-            let since = since_by_source_profile
-                .get(&source_profile_key(&profile.browser, &profile.profile))
-                .cloned();
-            let browser_name = profile.browser.clone();
-            let profile_name = profile.profile.clone();
-            let history_path = profile.history_path.clone();
-            let profile_visits = tokio::task::spawn_blocking(move || {
-                read_profile_visits(&browser_name, &profile_name, &history_path, since)
-            })
-            .await
-            .map_err(|error| WaylogError::Internal(error.to_string()))??;
-            visits.extend(profile_visits);
+        for source in &self.sources {
+            let profiles = match discover_profiles_in_root(source) {
+                Ok(profiles) => profiles,
+                Err(error) => {
+                    let message = format!(
+                        "Skipping unreadable {} browser root {}: {}",
+                        source.browser,
+                        source.root_dir.display(),
+                        error
+                    );
+                    tracing::warn!("{message}");
+                    warnings.push(message);
+                    continue;
+                }
+            };
+
+            for profile in profiles {
+                let since = since_by_source_profile
+                    .get(&source_profile_key(&profile.browser, &profile.profile))
+                    .cloned();
+                let browser_name = profile.browser.clone();
+                let profile_name = profile.profile.clone();
+                let history_path = profile.history_path.clone();
+                let profile_visits = tokio::task::spawn_blocking(move || {
+                    read_profile_visits(&browser_name, &profile_name, &history_path, since)
+                })
+                .await
+                .map_err(|error| WaylogError::Internal(error.to_string()))?;
+
+                match profile_visits {
+                    Ok(profile_visits) => visits.extend(profile_visits),
+                    Err(error) => {
+                        let message = format!(
+                            "Skipping unreadable {} browser profile {} ({}): {}",
+                            profile.browser,
+                            profile.profile,
+                            profile.history_path.display(),
+                            error
+                        );
+                        tracing::warn!("{message}");
+                        warnings.push(message);
+                    }
+                }
+            }
         }
 
         visits.sort_by(|left, right| {
@@ -83,7 +121,7 @@ impl ChromiumHistoryCollector {
                 .then_with(|| left.browser.cmp(&right.browser))
                 .then_with(|| left.profile.cmp(&right.profile))
         });
-        Ok(visits)
+        Ok(BrowserCollectionResult { visits, warnings })
     }
 }
 
@@ -419,6 +457,64 @@ mod tests {
         assert_eq!(visits[0].title, "Example");
         assert_eq!(visits[0].visit_count, 3);
         assert_eq!(visits[0].typed_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_collect_visits_since_skips_unreadable_profile() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let good_profile_dir = temp_dir.path().join("Default");
+        std::fs::create_dir_all(&good_profile_dir).unwrap();
+        let good_db_path = good_profile_dir.join("History");
+        let connection = Connection::open(&good_db_path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE urls (
+                    id INTEGER PRIMARY KEY,
+                    url LONGVARCHAR,
+                    title LONGVARCHAR,
+                    visit_count INTEGER DEFAULT 0,
+                    typed_count INTEGER DEFAULT 0
+                );
+                CREATE TABLE visits (
+                    id INTEGER PRIMARY KEY,
+                    url INTEGER,
+                    visit_time INTEGER,
+                    from_visit INTEGER,
+                    transition INTEGER DEFAULT 0
+                );
+                "#,
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO urls (id, url, title, visit_count, typed_count) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![1i64, "https://example.com", "Example", 1i64, 0i64],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO visits (id, url, visit_time, from_visit, transition) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![1i64, 1i64, chrome_datetime_to_micros(Utc.with_ymd_and_hms(2026, 5, 3, 2, 0, 0).unwrap()), Option::<i64>::None, 0i64],
+            )
+            .unwrap();
+
+        let broken_profile_dir = temp_dir.path().join("Broken");
+        std::fs::create_dir_all(&broken_profile_dir).unwrap();
+        std::fs::write(broken_profile_dir.join("History"), "not-a-sqlite-db").unwrap();
+
+        let collector =
+            ChromiumHistoryCollector::with_sources(vec![("atlas", temp_dir.path().to_path_buf())]);
+        let result = collector
+            .collect_visits_since(&HashMap::new())
+            .await
+            .unwrap();
+
+        assert_eq!(result.visits.len(), 1);
+        assert_eq!(result.visits[0].profile, "Default");
+        assert_eq!(result.visits[0].browser, "atlas");
+        assert_eq!(result.warnings.len(), 1);
     }
 
     #[cfg(target_os = "windows")]

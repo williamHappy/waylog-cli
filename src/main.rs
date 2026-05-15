@@ -88,6 +88,9 @@ async fn main() {
             }
             Commands::Export {
                 provider,
+                date,
+                from,
+                to,
                 browser,
                 no_browser,
                 archive_dir,
@@ -95,6 +98,9 @@ async fn main() {
             } => {
                 handle_export(
                     provider,
+                    date,
+                    from,
+                    to,
                     browser,
                     no_browser,
                     archive_dir,
