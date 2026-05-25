@@ -163,25 +163,51 @@ impl ClaudeProvider {
             _ => return Ok(None),
         };
 
-        // Extract content from message
+        // Extract content from message.
+        // For user messages, also capture tool_result errors so failed calls are visible in the log.
         let content = match &event.message {
             Some(msg) => match &msg.content {
                 ClaudeContent::Text(text) => text.clone(),
-                ClaudeContent::Array(items) => items
-                    .iter()
-                    .filter_map(|item| {
+                ClaudeContent::Array(items) => {
+                    let mut parts: Vec<String> = Vec::new();
+
+                    // Plain text items
+                    for item in items {
                         if item.content_type == "text" {
-                            item.text.clone()
-                        } else {
-                            None
+                            if let Some(t) = &item.text {
+                                parts.push(t.clone());
+                            }
                         }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                    }
+
+                    // tool_result items with is_error: true — include error text in content
+                    if role == MessageRole::User {
+                        for item in items {
+                            if item.content_type == "tool_result" && item.is_error == Some(true) {
+                                let error_text = match &item.content {
+                                    Some(ClaudeToolResultContent::Text(t)) => t.clone(),
+                                    Some(ClaudeToolResultContent::Array(arr)) => arr
+                                        .iter()
+                                        .filter(|i| i.item_type == "text")
+                                        .filter_map(|i| i.text.clone())
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                    None => String::new(),
+                                };
+                                if !error_text.is_empty() {
+                                    parts.push(format!("❌ **Tool Error:** {}", error_text.trim()));
+                                }
+                            }
+                        }
+                    }
+
+                    parts.join("\n")
+                }
             },
             None => return Ok(None),
         };
 
+        // Skip if no content at all (pure tool results without errors, IDE state messages, etc.)
         if content.is_empty() {
             return Ok(None);
         }
@@ -378,7 +404,27 @@ struct ClaudeContentItem {
     #[serde(rename = "type")]
     content_type: String,
     text: Option<String>,
-    name: Option<String>, // For tool_use
+    name: Option<String>, // For tool_use: tool name
+    // For tool_result: whether the call failed
+    #[serde(rename = "isError")]
+    is_error: Option<bool>,
+    // For tool_result: the result content (text or array)
+    content: Option<ClaudeToolResultContent>,
+}
+
+/// tool_result 的 content 字段可能是字符串或 [{type:"text",text:"..."}] 数组
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ClaudeToolResultContent {
+    Text(String),
+    Array(Vec<ClaudeToolResultTextItem>),
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeToolResultTextItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
