@@ -122,6 +122,7 @@ async fn main() {
                 repo,
                 repo_path,
                 branch,
+                token,
                 github_token_env,
                 message,
             } => {
@@ -130,6 +131,7 @@ async fn main() {
                     repo,
                     repo_path,
                     branch,
+                    token,
                     github_token_env,
                     message,
                     &mut output,

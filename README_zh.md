@@ -112,7 +112,7 @@ waylog export --provider codex --browser atlas --archive-dir ~/waylog-archive
 
 ### 4. 上传归档到 GitHub (`publish`)
 
-通过环境变量里的 GitHub token，把统一归档目录直接上传到 GitHub 仓库。这个流程走 GitHub API，不依赖本地 `git add/commit/push`。
+通过命令行直接传入或通过环境变量里的 GitHub token，把统一归档目录直接上传到 GitHub 仓库。这个流程走 GitHub API，不依赖本地 `git add/commit/push`。
 
 ```bash
 # 直接进入交互式发布流程
@@ -121,6 +121,9 @@ waylog publish
 # 或者显式传入仓库参数，并通过环境变量提供 token
 export GITHUB_TOKEN=ghp_xxx
 waylog publish --repo yourname/your-knowledge-repo
+
+# 或者直接在命令行里传入 token
+waylog publish --repo yourname/your-knowledge-repo --token ghp_xxx
 
 # 把指定归档目录上传到仓库内的自定义路径
 waylog publish \

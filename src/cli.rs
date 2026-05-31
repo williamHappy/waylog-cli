@@ -132,6 +132,10 @@ pub enum Commands {
         #[arg(long)]
         branch: Option<String>,
 
+        /// GitHub token passed directly on the command line
+        #[arg(long)]
+        token: Option<String>,
+
         /// Environment variable that holds the GitHub token
         #[arg(long, default_value = "GITHUB_TOKEN")]
         github_token_env: String,
@@ -176,6 +180,8 @@ mod tests {
             "openai/knowledge",
             "--repo-path",
             "waylog",
+            "--token",
+            "ghp_direct",
             "--github-token-env",
             "MY_TOKEN",
         ]);
@@ -186,6 +192,7 @@ mod tests {
                 repo,
                 repo_path,
                 branch,
+                token,
                 github_token_env,
                 message,
             } => {
@@ -193,6 +200,7 @@ mod tests {
                 assert_eq!(repo.as_deref(), Some("openai/knowledge"));
                 assert_eq!(repo_path, "waylog");
                 assert!(branch.is_none());
+                assert_eq!(token.as_deref(), Some("ghp_direct"));
                 assert_eq!(github_token_env, "MY_TOKEN");
                 assert!(message.is_none());
             }

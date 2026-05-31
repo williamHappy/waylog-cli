@@ -121,7 +121,7 @@ waylog export --provider codex --browser atlas --archive-dir ~/waylog-archive
 
 ### 4. Publish Archive To GitHub (`publish`)
 
-Uploads the archive directory to a GitHub repository using a token from an environment variable. This uses the GitHub API directly, so you do not need a local `git add/commit/push` workflow.
+Uploads the archive directory to a GitHub repository using a token passed directly or loaded from an environment variable. This uses the GitHub API directly, so you do not need a local `git add/commit/push` workflow.
 
 ```bash
 # Start interactive publishing and answer the prompts
@@ -130,6 +130,9 @@ waylog publish
 # Or provide the repo directly and keep the token in an env var
 export GITHUB_TOKEN=ghp_xxx
 waylog publish --repo yourname/your-knowledge-repo
+
+# Or pass the token directly on the command line
+waylog publish --repo yourname/your-knowledge-repo --token ghp_xxx
 
 # Publish a specific archive directory into a custom path in the repo
 waylog publish \

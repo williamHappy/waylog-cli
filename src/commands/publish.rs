@@ -10,6 +10,7 @@ pub async fn handle_publish(
     repo: Option<String>,
     repo_path: String,
     branch: Option<String>,
+    token: Option<String>,
     github_token_env: String,
     message: Option<String>,
     output: &mut Output,
@@ -83,16 +84,7 @@ pub async fn handle_publish(
         }
     };
 
-    let token = match std::env::var(&github_token_env) {
-        Ok(token) => token,
-        Err(_) => Password::new()
-            .with_prompt(format!(
-                "GitHub token ({} not set in env)",
-                github_token_env
-            ))
-            .interact()
-            .map_err(|error| WaylogError::Internal(error.to_string()))?,
-    };
+    let token = resolve_github_token(token, &github_token_env)?;
 
     output.info(format!(
         "Publishing {} to GitHub repo {}",
@@ -115,4 +107,47 @@ pub async fn handle_publish(
         result.uploaded, result.skipped
     ))?;
     Ok(())
+}
+
+fn resolve_github_token(token: Option<String>, github_token_env: &str) -> Result<String> {
+    if let Some(token) = token {
+        return Ok(token);
+    }
+
+    match std::env::var(github_token_env) {
+        Ok(token) => Ok(token),
+        Err(_) => Password::new()
+            .with_prompt(format!(
+                "GitHub token ({} not set in env)",
+                github_token_env
+            ))
+            .interact()
+            .map_err(|error| WaylogError::Internal(error.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_github_token_prefers_direct_token() {
+        let token = resolve_github_token(Some("ghp_direct".to_string()), "MISSING_ENV").unwrap();
+        assert_eq!(token, "ghp_direct");
+    }
+
+    #[test]
+    fn test_resolve_github_token_falls_back_to_env() {
+        let key = "WAYLOG_TEST_GITHUB_TOKEN";
+        unsafe {
+            std::env::set_var(key, "ghp_from_env");
+        }
+
+        let token = resolve_github_token(None, key).unwrap();
+        assert_eq!(token, "ghp_from_env");
+
+        unsafe {
+            std::env::remove_var(key);
+        }
+    }
 }
