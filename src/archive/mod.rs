@@ -78,7 +78,19 @@ impl ArchiveWriter {
 
         let mut index_entries = read_session_index_entries(&self.archive_dir).await?;
         if let Some(existing_entry) = index_entries.get(&stable_key) {
-            if !existing_entry.should_rewrite(&source_mtime, source_size, session.messages.len()) {
+            // 同一个逻辑会话被 resume/fork 后会生成多个源文件，且它们解析出的
+            // session_id 相同（如 Claude `--resume`），从而碰撞到同一个 stable_key。
+            // 若放任每个文件都覆盖索引项，watch 每个周期都会反复重写、刷新
+            // exported_at，导致 sessions.jsonl 与 manifest.json 无谓 churn。
+            // 去重规则：同一源文件仅在内容真正变化时重写；不同源文件只有在“更完整”
+            // （消息更多）时才接管，否则跳过——以此为每个会话确定唯一赢家。
+            let same_source = existing_entry.source_path == source_path.display().to_string();
+            let should_write = if same_source {
+                existing_entry.should_rewrite(&source_mtime, source_size, session.messages.len())
+            } else {
+                session.messages.len() > existing_entry.message_count
+            };
+            if !should_write {
                 remove_legacy_meta_file(&paths.markdown_path).await?;
                 return Ok(ArchiveExportResult {
                     paths,
@@ -341,6 +353,33 @@ mod tests {
         }
     }
 
+    /// 构造指定 session_id 与消息数的会话，内容均为实质文本以通过噪声过滤。
+    fn session_with_messages(session_id: &str, message_count: usize) -> ChatSession {
+        let now = Utc::now();
+        let messages = (0..message_count)
+            .map(|i| ChatMessage {
+                id: format!("m-{}", i),
+                timestamp: now,
+                role: if i % 2 == 0 {
+                    MessageRole::User
+                } else {
+                    MessageRole::Assistant
+                },
+                content: format!("第{}条关于统一归档目录结构的详细讨论内容", i),
+                metadata: MessageMetadata::default(),
+            })
+            .collect();
+
+        ChatSession {
+            session_id: session_id.to_string(),
+            provider: "claude".to_string(),
+            project_path: PathBuf::from("/tmp/project"),
+            started_at: now,
+            updated_at: now,
+            messages,
+        }
+    }
+
     #[tokio::test]
     async fn test_archive_writer_creates_markdown_raw_and_index() {
         let temp_dir = TempDir::new().unwrap();
@@ -367,6 +406,79 @@ mod tests {
             .join("indexes")
             .join("manifest.json")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn test_archive_writer_dedupes_multi_file_session_id_to_most_complete() {
+        // 模拟一个会话被 resume 成多个源文件，共享同一 session_id：
+        // 大文件(消息多)应稳定胜出，小文件(消息少)被跳过，避免每周期 churn。
+        let temp_dir = TempDir::new().unwrap();
+        let big_raw = temp_dir.path().join("big.jsonl");
+        let small_raw = temp_dir.path().join("small.jsonl");
+        tokio::fs::write(&big_raw, "{}\n").await.unwrap();
+        tokio::fs::write(&small_raw, "{}\n").await.unwrap();
+
+        let writer = ArchiveWriter::new(temp_dir.path().to_path_buf());
+        let big = session_with_messages("shared-session", 6);
+        let small = session_with_messages("shared-session", 2);
+
+        // 大文件先归档 → 写入
+        let r1 = writer.export_session(&big, &big_raw, "jsonl").await.unwrap();
+        assert!(r1.written);
+
+        // 小文件(同 session_id、更少消息) → 跳过，不覆盖
+        let r2 = writer
+            .export_session(&small, &small_raw, "jsonl")
+            .await
+            .unwrap();
+        assert!(!r2.written);
+        assert!(r2.filtered_reason.is_none());
+
+        // 再次处理小文件依旧跳过：验证不会反复重写(无 churn)
+        let r3 = writer
+            .export_session(&small, &small_raw, "jsonl")
+            .await
+            .unwrap();
+        assert!(!r3.written);
+
+        // 索引仍指向大文件
+        let entries = super::read_session_index_entries(temp_dir.path())
+            .await
+            .unwrap();
+        let entry = entries.get("claude:shared-session").unwrap();
+        assert_eq!(entry.message_count, 6);
+        assert_eq!(entry.source_path, big_raw.display().to_string());
+    }
+
+    #[tokio::test]
+    async fn test_archive_writer_adopts_more_complete_file_for_same_session_id() {
+        // 当出现“更完整”的新文件(消息更多)时，应接管为新的赢家。
+        let temp_dir = TempDir::new().unwrap();
+        let first_raw = temp_dir.path().join("first.jsonl");
+        let bigger_raw = temp_dir.path().join("bigger.jsonl");
+        tokio::fs::write(&first_raw, "{}\n").await.unwrap();
+        tokio::fs::write(&bigger_raw, "{}\n").await.unwrap();
+
+        let writer = ArchiveWriter::new(temp_dir.path().to_path_buf());
+
+        let r1 = writer
+            .export_session(&session_with_messages("shared-session", 4), &first_raw, "jsonl")
+            .await
+            .unwrap();
+        assert!(r1.written);
+
+        let r2 = writer
+            .export_session(&session_with_messages("shared-session", 8), &bigger_raw, "jsonl")
+            .await
+            .unwrap();
+        assert!(r2.written);
+
+        let entries = super::read_session_index_entries(temp_dir.path())
+            .await
+            .unwrap();
+        let entry = entries.get("claude:shared-session").unwrap();
+        assert_eq!(entry.message_count, 8);
+        assert_eq!(entry.source_path, bigger_raw.display().to_string());
     }
 
     #[tokio::test]
