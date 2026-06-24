@@ -20,13 +20,11 @@ pub struct SessionIndexEntry {
 impl SessionIndexEntry {
     pub fn should_rewrite(
         &self,
-        source_mtime: &str,
-        source_size: u64,
+        _source_mtime: &str,
+        _source_size: u64,
         message_count: usize,
     ) -> bool {
-        self.source_mtime != source_mtime
-            || self.source_size != source_size
-            || self.message_count != message_count
+        self.message_count != message_count
     }
 }
 
@@ -51,7 +49,7 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn test_should_rewrite_when_source_mtime_changes() {
+    fn test_should_not_rewrite_when_only_source_mtime_changes() {
         let old_meta = SessionIndexEntry {
             stable_key: "codex:session-1".to_string(),
             provider: "codex".to_string(),
@@ -69,7 +67,7 @@ mod tests {
         };
 
         let changed = old_meta.should_rewrite("2026-04-24T19:30:00+08:00", 100, 10);
-        assert!(changed);
+        assert!(!changed);
     }
 
     #[test]

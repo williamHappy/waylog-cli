@@ -76,6 +76,7 @@ impl ArchiveWriter {
             .map(crate::utils::time::format_system_time_as_local_rfc3339)
             .unwrap_or_else(|| crate::utils::time::format_local_rfc3339(&session.updated_at));
 
+        let markdown = crate::exporter::generate_markdown(session);
         let mut index_entries = read_session_index_entries(&self.archive_dir).await?;
         if let Some(existing_entry) = index_entries.get(&stable_key) {
             // 同一个逻辑会话被 resume/fork 后会生成多个源文件，且它们解析出的
@@ -86,7 +87,8 @@ impl ArchiveWriter {
             // （消息更多）时才接管，否则跳过——以此为每个会话确定唯一赢家。
             let same_source = existing_entry.source_path == source_path.display().to_string();
             let should_write = if same_source {
-                existing_entry.should_rewrite(&source_mtime, source_size, session.messages.len())
+                same_source_session_changed(existing_entry, &markdown, session.messages.len())
+                    .await?
             } else {
                 session.messages.len() > existing_entry.message_count
             };
@@ -100,11 +102,7 @@ impl ArchiveWriter {
             }
         }
 
-        fs::write(
-            &paths.markdown_path,
-            crate::exporter::generate_markdown(session),
-        )
-        .await?;
+        fs::write(&paths.markdown_path, markdown).await?;
         fs::copy(source_path, &paths.raw_path).await?;
 
         remove_legacy_meta_file(&paths.markdown_path).await?;
@@ -315,14 +313,48 @@ pub(crate) fn latest_browser_visit_per_source_profile(
 }
 
 fn latest_session_key(entries: &BTreeMap<String, SessionIndexEntry>) -> Option<String> {
-    entries.keys().last().cloned()
+    entries
+        .values()
+        .max_by(|left, right| {
+            let left_started_at = DateTime::parse_from_rfc3339(&left.started_at).ok();
+            let right_started_at = DateTime::parse_from_rfc3339(&right.started_at).ok();
+            match (left_started_at, right_started_at) {
+                (Some(left_started_at), Some(right_started_at)) => {
+                    left_started_at.cmp(&right_started_at)
+                }
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (None, None) => left.stable_key.cmp(&right.stable_key),
+            }
+        })
+        .map(|entry| entry.stable_key.clone())
+}
+
+async fn same_source_session_changed(
+    existing_entry: &SessionIndexEntry,
+    markdown: &str,
+    message_count: usize,
+) -> Result<bool> {
+    if existing_entry.message_count != message_count {
+        return Ok(true);
+    }
+
+    let markdown_path = PathBuf::from(&existing_entry.markdown_path);
+    if !markdown_path.exists() {
+        return Ok(true);
+    }
+
+    let existing_markdown = fs::read_to_string(markdown_path).await?;
+    Ok(existing_markdown != markdown)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ArchiveWriter;
+    use super::{latest_session_key, ArchiveWriter};
+    use crate::archive::meta::SessionIndexEntry;
     use crate::providers::base::{ChatMessage, ChatSession, MessageMetadata, MessageRole};
     use chrono::Utc;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -423,7 +455,10 @@ mod tests {
         let small = session_with_messages("shared-session", 2);
 
         // 大文件先归档 → 写入
-        let r1 = writer.export_session(&big, &big_raw, "jsonl").await.unwrap();
+        let r1 = writer
+            .export_session(&big, &big_raw, "jsonl")
+            .await
+            .unwrap();
         assert!(r1.written);
 
         // 小文件(同 session_id、更少消息) → 跳过，不覆盖
@@ -462,13 +497,21 @@ mod tests {
         let writer = ArchiveWriter::new(temp_dir.path().to_path_buf());
 
         let r1 = writer
-            .export_session(&session_with_messages("shared-session", 4), &first_raw, "jsonl")
+            .export_session(
+                &session_with_messages("shared-session", 4),
+                &first_raw,
+                "jsonl",
+            )
             .await
             .unwrap();
         assert!(r1.written);
 
         let r2 = writer
-            .export_session(&session_with_messages("shared-session", 8), &bigger_raw, "jsonl")
+            .export_session(
+                &session_with_messages("shared-session", 8),
+                &bigger_raw,
+                "jsonl",
+            )
             .await
             .unwrap();
         assert!(r2.written);
@@ -490,18 +533,106 @@ mod tests {
             .unwrap();
 
         let writer = ArchiveWriter::new(temp_dir.path().to_path_buf());
+        let session = test_session();
         let first = writer
-            .export_session(&test_session(), &raw_path, "jsonl")
+            .export_session(&session, &raw_path, "jsonl")
             .await
             .unwrap();
         let second = writer
-            .export_session(&test_session(), &raw_path, "jsonl")
+            .export_session(&session, &raw_path, "jsonl")
             .await
             .unwrap();
 
         assert!(first.written);
         assert!(!second.written);
         assert!(second.filtered_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_archive_writer_skips_when_raw_metadata_changes_but_markdown_is_same() {
+        let temp_dir = TempDir::new().unwrap();
+        let raw_path = temp_dir.path().join("source.jsonl");
+        tokio::fs::write(&raw_path, "{\"type\":\"response_item\"}\n")
+            .await
+            .unwrap();
+
+        let writer = ArchiveWriter::new(temp_dir.path().to_path_buf());
+        let session = test_session();
+        let first = writer
+            .export_session(&session, &raw_path, "jsonl")
+            .await
+            .unwrap();
+        let entries = super::read_session_index_entries(temp_dir.path())
+            .await
+            .unwrap();
+        let first_entry = entries.get("codex:session-1").unwrap().clone();
+
+        tokio::fs::write(
+            &raw_path,
+            "{\"type\":\"session_meta\",\"model_provider\":\"openai\"}\n{\"type\":\"response_item\"}\n",
+        )
+        .await
+        .unwrap();
+
+        let second = writer
+            .export_session(&session, &raw_path, "jsonl")
+            .await
+            .unwrap();
+        let entries = super::read_session_index_entries(temp_dir.path())
+            .await
+            .unwrap();
+        let second_entry = entries.get("codex:session-1").unwrap();
+
+        assert!(first.written);
+        assert!(!second.written);
+        assert_eq!(second_entry.source_size, first_entry.source_size);
+        assert_eq!(second_entry.exported_at, first_entry.exported_at);
+    }
+
+    #[test]
+    fn test_latest_session_key_uses_started_at_instead_of_sorted_key() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "codex:rollout-2026-03-10T15-42-52-z".to_string(),
+            SessionIndexEntry {
+                stable_key: "codex:rollout-2026-03-10T15-42-52-z".to_string(),
+                provider: "codex".to_string(),
+                session_id: "rollout-2026-03-10T15-42-52-z".to_string(),
+                title: "old".to_string(),
+                started_at: "2026-03-10T15:42:52+08:00".to_string(),
+                project_path: "/tmp/project".to_string(),
+                source_path: "/tmp/old.jsonl".to_string(),
+                source_mtime: "2026-03-10T15:42:52+08:00".to_string(),
+                source_size: 100,
+                message_count: 1,
+                markdown_path: "sessions/old.md".to_string(),
+                raw_path: "sessions/old.raw.jsonl".to_string(),
+                exported_at: "2026-03-10T15:42:52+08:00".to_string(),
+            },
+        );
+        entries.insert(
+            "codex:rollout-2026-06-24T17-15-55-a".to_string(),
+            SessionIndexEntry {
+                stable_key: "codex:rollout-2026-06-24T17-15-55-a".to_string(),
+                provider: "codex".to_string(),
+                session_id: "rollout-2026-06-24T17-15-55-a".to_string(),
+                title: "new".to_string(),
+                started_at: "2026-06-24T17:15:55+08:00".to_string(),
+                project_path: "/tmp/project".to_string(),
+                source_path: "/tmp/new.jsonl".to_string(),
+                source_mtime: "2026-06-24T17:15:55+08:00".to_string(),
+                source_size: 100,
+                message_count: 1,
+                markdown_path: "sessions/new.md".to_string(),
+                raw_path: "sessions/new.raw.jsonl".to_string(),
+                exported_at: "2026-06-24T17:15:55+08:00".to_string(),
+            },
+        );
+
+        assert_eq!(
+            latest_session_key(&entries).as_deref(),
+            Some("codex:rollout-2026-06-24T17-15-55-a")
+        );
     }
 
     #[tokio::test]
