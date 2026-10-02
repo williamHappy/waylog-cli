@@ -2,17 +2,6 @@
   {
     "origin": "https://shop.example",
     "path": "/product",
-    "params": ["code", "page", "sort"]
-  },
-  {
-    "origin": "https://search.example",
-    "path": "/search",
-    "params": ["q", "page"]
-  },
-  {
-    "origin": "https://app.example",
-    "path": "/",
-    "fragment_path": "/orders",
-    "params": ["page"]
+    "params": ["code"]
   }
 ]

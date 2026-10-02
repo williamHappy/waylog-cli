@@ -15,7 +15,7 @@ struct UrlRule {
     params: Vec<String>,
 }
 
-/// Hide parameter values by default, retaining approved values only in exact scopes.
+/// Retain ordinary parameters and hide known credentials and authorization codes.
 /// Invalid URLs are returned unchanged. Rules are loaded once per process.
 pub fn sanitize_url(raw: &str) -> String {
     static RULES: OnceLock<Vec<UrlRule>> = OnceLock::new();
@@ -35,12 +35,18 @@ fn read_rules(path: &std::path::Path) -> Vec<UrlRule> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     rules.unwrap_or_else(|| {
         // Do not include file contents or parser errors, which may expose values.
-        tracing::warn!("Browser URL rules could not be loaded; hiding all parameter values");
+        tracing::warn!(
+            "Browser URL rules could not be loaded; using default sensitive-parameter rules"
+        );
         Vec::new()
     })
 }
 
 fn sanitize_with_rules(raw: &str, rules: &[UrlRule]) -> String {
+    sanitize_at_depth(raw, rules, 0)
+}
+
+fn sanitize_at_depth(raw: &str, rules: &[UrlRule], depth: usize) -> String {
     let Ok(mut parsed) = Url::parse(raw) else {
         return raw.to_string();
     };
@@ -59,7 +65,7 @@ fn sanitize_with_rules(raw: &str, rules: &[UrlRule]) -> String {
 
     if let Some(query) = parsed.query() {
         result.push('?');
-        result.push_str(&sanitize_params(query, &parsed, None, rules));
+        result.push_str(&sanitize_params(query, &parsed, None, rules, depth));
     }
     if let Some(fragment) = parsed.fragment() {
         result.push('#');
@@ -70,45 +76,108 @@ fn sanitize_with_rules(raw: &str, rules: &[UrlRule]) -> String {
             result.push_str(route);
             if let Some(query) = query {
                 result.push('?');
-                result.push_str(&sanitize_params(query, &parsed, Some(route), rules));
+                result.push_str(&sanitize_params(query, &parsed, Some(route), rules, depth));
             }
         } else if fragment.contains('=') {
-            result.push_str(&sanitize_params(fragment, &parsed, Some(""), rules));
+            result.push_str(&sanitize_params(fragment, &parsed, Some(""), rules, depth));
         } else if !fragment.is_empty() {
-            // Unknown fragments can be bearer credentials even without a key.
-            result.push_str(REDACTED);
+            result.push_str(fragment);
         }
     }
     result
 }
 
-fn sanitize_params(raw: &str, url: &Url, route: Option<&str>, rules: &[UrlRule]) -> String {
+fn sanitize_params(
+    raw: &str,
+    url: &Url,
+    route: Option<&str>,
+    rules: &[UrlRule],
+    depth: usize,
+) -> String {
     let origin = url.origin().ascii_serialization();
-    let mut serializer = form_urlencoded::Serializer::new(String::new());
-    for part in raw.split('&').filter(|part| !part.is_empty()) {
-        if !part.contains('=') {
-            // A bare query component could itself be a credential, not a key.
-            serializer.append_pair(REDACTED, REDACTED);
-            continue;
-        }
-        let Some((key, value)) = form_urlencoded::parse(part.as_bytes()).next() else {
-            continue;
-        };
-        let approved = !sensitive_key(&key)
-            && !sensitive_path(url.path())
-            && !route.is_some_and(sensitive_path)
-            && Url::parse(&value).is_err()
-            && !value.contains("://")
-            && rules.iter().any(|rule| {
+    raw.split('&')
+        .map(|part| {
+            let Some((key, value)) = form_urlencoded::parse(part.as_bytes()).next() else {
+                return part.to_string();
+            };
+            let code_exception = rules.iter().any(|rule| {
                 origin != "null"
                     && rule.origin == origin
                     && rule.path == url.path()
                     && rule.fragment_path.as_deref() == route
                     && rule.params.iter().any(|param| param == key.as_ref())
             });
-        serializer.append_pair(&key, if approved { &value } else { REDACTED });
+            let redact = sensitive_key(&key)
+                || (key.eq_ignore_ascii_case("code")
+                    && (sensitive_path(url.path())
+                        || route.is_some_and(sensitive_path)
+                        || !code_exception));
+            if redact {
+                let raw_key = part.split_once('=').map_or(part, |(key, _)| key);
+                return format!("{raw_key}={REDACTED}");
+            }
+            // Preserve ordinary parameters byte-for-byte, including flags and encoding.
+            if part.contains('=') {
+                if let Some(nested) = sanitize_nested(&value, rules, depth) {
+                    if nested != value {
+                        let encoded = form_urlencoded::Serializer::new(String::new())
+                            .append_pair(&key, &nested)
+                            .finish();
+                        return encoded;
+                    }
+                }
+            }
+            part.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn sanitize_nested(value: &str, rules: &[UrlRule], depth: usize) -> Option<String> {
+    let lowercase = value.to_ascii_lowercase();
+    let absolute = lowercase.starts_with("https://") || lowercase.starts_with("http://");
+    let network_path = value.starts_with("//");
+    let relative = value.starts_with('/') && !value.starts_with("//") && value.contains(['?', '#']);
+    if !absolute && !relative && !network_path {
+        // Some redirect parameters encode the nested address more than once.
+        if depth < 4 && value.contains('%') && !value.contains('&') {
+            let wrapped = format!("v={value}");
+            let (_, decoded) = form_urlencoded::parse(wrapped.as_bytes()).next()?;
+            if decoded != value {
+                let sanitized = sanitize_nested(&decoded, rules, depth + 1)?;
+                if sanitized != decoded {
+                    let encoded = form_urlencoded::Serializer::new(String::new())
+                        .append_pair("v", &sanitized)
+                        .finish();
+                    return Some(encoded[2..].to_string());
+                }
+            }
+        }
+        return None;
     }
-    serializer.finish()
+    if depth >= 4 {
+        return Some(REDACTED.to_string());
+    }
+    if network_path {
+        let sanitized = sanitize_at_depth(&format!("https:{value}"), rules, depth + 1);
+        Some(
+            sanitized
+                .strip_prefix("https:")
+                .unwrap_or(REDACTED)
+                .to_string(),
+        )
+    } else if absolute {
+        Some(sanitize_at_depth(value, rules, depth + 1))
+    } else {
+        let sanitized =
+            sanitize_at_depth(&format!("https://waylog.invalid{value}"), rules, depth + 1);
+        Some(
+            sanitized
+                .strip_prefix("https://waylog.invalid")
+                .unwrap_or(REDACTED)
+                .to_string(),
+        )
+    }
 }
 
 fn sensitive_key(key: &str) -> bool {
@@ -140,15 +209,6 @@ fn sensitive_key(key: &str) -> bool {
                 | "samlresponse"
                 | "samlrequest"
                 | "assertion"
-                | "next"
-                | "url"
-                | "redirect"
-                | "redirecturi"
-                | "redirecturl"
-                | "returnurl"
-                | "returnto"
-                | "continue"
-                | "destination"
         )
 }
 
@@ -172,55 +232,74 @@ mod tests {
     use super::*;
 
     fn rules() -> Vec<UrlRule> {
-        serde_json::from_str(r#"[
-            {"origin":"https://shop.example","path":"/product","params":["code","page","next","access_token","state"]},
-            {"origin":"https://shop.example","path":"/oauth/callback","params":["code","page"]},
-            {"origin":"https://shop.example","path":"/","fragment_path":"/orders","params":["page","access_token"]}
-        ]"#).unwrap()
+        serde_json::from_str(
+            r#"[
+            {"origin":"https://shop.example","path":"/product","params":["code","access_token"]},
+            {"origin":"https://shop.example","path":"/oauth/callback","params":["code"]}
+        ]"#,
+        )
+        .unwrap()
     }
 
     #[test]
-    fn loads_rules_from_file_and_fails_closed_on_invalid_configuration() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("rules.json");
-        assert!(read_rules(&path).is_empty());
-        std::fs::write(&path, include_str!("../../browser-url-rules.example.json")).unwrap();
-        assert_eq!(
-            sanitize_with_rules(
-                "https://shop.example/product?code=SKU123&page=2",
-                &read_rules(&path)
-            ),
-            "https://shop.example/product?code=SKU123&page=2"
-        );
-        for invalid in [
-            "not JSON",
-            r#"[{"origin":"https://shop.example","path":"/product","params":["code"],"typo":true}]"#,
+    fn ordinary_parameters_are_preserved_without_configuration() {
+        for raw in [
+            "https://a.com/product?id=123&page=2&sort=time&q=Rust&custom=abc",
+            "https://a.com/?flag&x=&x=abc&&q=a%20b&z=%2f",
+            "https://a.com/#/orders?page=2",
+            "https://a.com/#section-2",
+            "https://a.com/#page=2",
+            "HTTPS://Example.COM:443/a/../b%3Fc%23d",
+            "file:///tmp/page.html",
         ] {
-            std::fs::write(&path, invalid).unwrap();
-            assert_eq!(
-                sanitize_with_rules(
-                    "https://shop.example/product?code=secret",
-                    &read_rules(&path)
-                ),
-                "https://shop.example/product?code=REDACTED"
-            );
+            assert_eq!(sanitize_with_rules(raw, &[]), raw);
         }
     }
 
     #[test]
-    fn redacts_all_unapproved_values_and_nested_urls() {
-        let raw = "https://a.com/x?code=abc&refresh_token=abc&access_token=abc&id_token=abc&_casTicket=abc&custom=abc&next=https%3A%2F%2Fb.com%2F%3Ftoken%3Dabc";
-        assert_eq!(sanitize_with_rules(raw, &[]), "https://a.com/x?code=REDACTED&refresh_token=REDACTED&access_token=REDACTED&id_token=REDACTED&_casTicket=REDACTED&custom=REDACTED&next=REDACTED");
-        assert_eq!(
-            sanitize_with_rules("https://a.com/?opaque-secret&x=&x=abc", &[]),
-            "https://a.com/?REDACTED=REDACTED&x=REDACTED&x=REDACTED"
-        );
+    fn mixed_sensitive_and_ordinary_parameters_are_handled_in_url_and_fragment() {
+        for (raw, expected) in [
+            (
+                "https://a.com/product?id=123&page=2&access_token=secret",
+                "https://a.com/product?id=123&page=2&access_token=REDACTED",
+            ),
+            (
+                "https://a.com/callback?code=abc&state=xyz&page=2",
+                "https://a.com/callback?code=REDACTED&state=REDACTED&page=2",
+            ),
+            (
+                "https://a.com/#/orders?page=2&refresh_token=secret",
+                "https://a.com/#/orders?page=2&refresh_token=REDACTED",
+            ),
+            (
+                "https://a.com/#id_token=secret&lang=zh",
+                "https://a.com/#id_token=REDACTED&lang=zh",
+            ),
+            (
+                "https://a.com/?_casTicket=secret&id=1&API-KEY=secret&password=secret",
+                "https://a.com/?_casTicket=REDACTED&id=1&API-KEY=REDACTED&password=REDACTED",
+            ),
+            (
+                "https://a.com/?%61ccess%5ftoken=secret&x=abc",
+                "https://a.com/?%61ccess%5ftoken=REDACTED&x=abc",
+            ),
+        ] {
+            let sanitized = sanitize_with_rules(raw, &[]);
+            assert_eq!(sanitized, expected);
+            assert_eq!(sanitize_with_rules(&sanitized, &[]), sanitized);
+        }
     }
 
     #[test]
-    fn approves_only_exact_scopes_and_never_explicit_credentials() {
+    fn code_exceptions_are_exact_and_cannot_release_known_credentials_or_callback_codes() {
         let rules = rules();
-        assert_eq!(sanitize_with_rules("https://shop.example/product?code=SKU123&page=2&custom=abc&access_token=abc&state=abc&next=https%3A%2F%2Fa.com", &rules), "https://shop.example/product?code=SKU123&page=2&custom=REDACTED&access_token=REDACTED&state=REDACTED&next=REDACTED");
+        assert_eq!(
+            sanitize_with_rules(
+                "https://shop.example/product?code=SKU123&page=2&access_token=secret",
+                &rules
+            ),
+            "https://shop.example/product?code=SKU123&page=2&access_token=REDACTED"
+        );
         for raw in [
             "https://shop.example/other?code=abc",
             "https://shop.example.evil/product?code=abc",
@@ -233,79 +312,74 @@ mod tests {
     }
 
     #[test]
-    fn handles_encoded_keys_duplicates_and_is_idempotent() {
-        let raw = "https://shop.example/product?%61ccess%5ftoken=abc&code=A&code=B#id_token=abc";
-        let sanitized = sanitize_with_rules(raw, &rules());
-        assert_eq!(
-            sanitized,
-            "https://shop.example/product?access_token=REDACTED&code=A&code=B#id_token=REDACTED"
-        );
-        assert_eq!(sanitize_with_rules(&sanitized, &rules()), sanitized);
-    }
-
-    #[test]
-    fn nested_redirect_values_stay_hidden_even_if_allowlisted() {
-        for value in [
-            "/callback?code=secret",
-            "https%3A%2F%2Fa.com",
-            "https%253A%252F%252Fa.com",
-        ] {
-            let raw = format!("https://shop.example/product?next={value}");
-            assert_eq!(
-                sanitize_with_rules(&raw, &rules()),
-                "https://shop.example/product?next=REDACTED"
-            );
-        }
-    }
-
-    #[test]
-    fn handles_fragments_and_scopes_route_parameters_separately() {
-        let rules = rules();
+    fn nested_urls_preserve_ordinary_values_and_redact_credentials() {
         for (raw, expected) in [
             (
-                "https://shop.example/#/orders?page=2&access_token=abc",
-                "https://shop.example/#/orders?page=2&access_token=REDACTED",
+                "https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fpage%3D2%26token%3Dsecret",
+                "https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fpage%3D2%26token%3DREDACTED",
             ),
             (
-                "https://shop.example/#/other?page=2",
-                "https://shop.example/#/other?page=REDACTED",
+                "https://a.com/?next=%2Fcallback%3Fcode%3Dsecret%26page%3D2",
+                "https://a.com/?next=%2Fcallback%3Fcode%3DREDACTED%26page%3D2",
             ),
             (
-                "https://shop.example/?page=2",
-                "https://shop.example/?page=REDACTED",
+                "https://a.com/?next=%2Forders%3Fpage%3D2",
+                "https://a.com/?next=%2Forders%3Fpage%3D2",
             ),
             (
-                "https://shop.example/#access_token=abc&state=xyz",
-                "https://shop.example/#access_token=REDACTED&state=REDACTED",
+                "https://a.com/?next=https%253A%252F%252Fb.com%252F%253Ftoken%253Dsecret",
+                "https://a.com/?next=https%253A%252F%252Fb.com%252F%253Ftoken%253DREDACTED",
             ),
             (
-                "https://shop.example/#opaque-secret",
-                "https://shop.example/#REDACTED",
+                "https://a.com/?next=%2F%2Fb.com%2F%3Fpage%3D2%26token%3Dsecret",
+                "https://a.com/?next=%2F%2Fb.com%2F%3Fpage%3D2%26token%3DREDACTED",
             ),
         ] {
-            assert_eq!(sanitize_with_rules(raw, &rules), expected);
+            assert_eq!(sanitize_with_rules(raw, &[]), expected);
         }
+        let mut nested = "https://a.com/?token=secret".to_string();
+        for _ in 0..7 {
+            nested = format!(
+                "https://a.com/?{}",
+                form_urlencoded::Serializer::new(String::new())
+                    .append_pair("next", &nested)
+                    .finish()
+            );
+        }
+        let sanitized = sanitize_with_rules(&nested, &[]);
+        assert!(!sanitized.contains("secret"));
+        assert_eq!(sanitize_with_rules(&sanitized, &[]), sanitized);
     }
 
     #[test]
-    fn removes_userinfo_but_preserves_ordinary_base_urls() {
+    fn config_failures_do_not_hide_ordinary_parameters_or_release_code() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.json");
+        assert!(read_rules(&path).is_empty());
+        std::fs::write(&path, include_str!("../../browser-url-rules.example.json")).unwrap();
         assert_eq!(
-            sanitize_with_rules("https://user:secret@a.com/x?code=abc", &[]),
-            "https://a.com/x?code=REDACTED"
+            sanitize_with_rules(
+                "https://shop.example/product?code=SKU123&page=2",
+                &read_rules(&path)
+            ),
+            "https://shop.example/product?code=SKU123&page=2"
         );
-        for raw in [
-            "https://a.com",
-            "HTTPS://Example.COM:443/a/../b%3Fc%23d",
-            "http://[::1]:8080/a",
-            "chrome://settings/",
-            "file:///tmp/page.html",
-        ] {
-            assert_eq!(sanitize_with_rules(raw, &[]), raw);
-        }
+        std::fs::write(&path, "not JSON").unwrap();
+        assert_eq!(
+            sanitize_with_rules(
+                "https://shop.example/product?code=secret&page=2",
+                &read_rules(&path)
+            ),
+            "https://shop.example/product?code=REDACTED&page=2"
+        );
     }
 
     #[test]
-    fn preserves_invalid_urls() {
+    fn removes_userinfo_and_preserves_invalid_urls() {
+        assert_eq!(
+            sanitize_with_rules("https://user:secret@a.com/x?page=2", &[]),
+            "https://a.com/x?page=2"
+        );
         for raw in [
             "",
             "not a URL?code=abc#f",

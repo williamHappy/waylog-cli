@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(visits.len(), 1);
         assert_eq!(visits[0].browser, "atlas");
         assert_eq!(visits[0].profile, "Default");
-        let expected_url = "https://example.com?code=REDACTED&refresh_token=REDACTED&access_token=REDACTED&id_token=REDACTED&_casTicket=REDACTED#REDACTED";
+        let expected_url = "https://example.com?code=REDACTED&refresh_token=REDACTED&access_token=REDACTED&id_token=REDACTED&_casTicket=REDACTED#f";
         assert_eq!(visits[0].url, expected_url);
         assert_eq!(
             visits[0].record_id,

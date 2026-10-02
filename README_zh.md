@@ -82,14 +82,17 @@ waylog pull
 
 如果你的 Chrome 历史已经通过账户在多设备间同步，只希望其中一台机器负责归档浏览器历史，可以在其他机器上使用 `--no-browser`，只归档 AI 会话。
 
-浏览器 URL 默认保留参数名，但把参数值替换为 `REDACTED`，例如
-`/callback?code=abc&state=xyz` → `/callback?code=REDACTED&state=REDACTED`。
-fragment 中的参数同样处理；`#/orders?page=2` 保留 `/orders` 路由，默认隐藏分页值；
-无法识别的非路由 fragment 整体隐藏。嵌套跳转地址默认整值隐藏，URL 中的用户名、密码也会删除。
+浏览器 URL 只隐藏已识别的敏感参数值，普通参数默认保留，例如
+`/product?id=123&page=2&access_token=abc` → `/product?id=123&page=2&access_token=REDACTED`。
+fragment 参数同样处理；`#/orders?page=2` 和普通锚点保持原样。
+嵌套的 HTTP(S) 地址和带参数的根路径跳转地址递归处理，保留普通值、隐藏敏感值；
+嵌套超过四层时整体隐藏深层地址。URL 中的用户名、密码也会删除。
 `record_id` 使用同一个脱敏后的 URL，访问时间和 visit ID 继续区分不同访问。
 
-如需保留已确认安全的搜索、分页或商品参数，可复制并修改
-[`browser-url-rules.example.json`](browser-url-rules.example.json)，通过环境变量指定规则文件：
+refresh_token、access_token、id_token、ticket、password、api_key、state 等凭据和
+认证参数会隐藏。`code` 既可能是授权码，也可能是商品编号，默认隐藏；如确认某个商品
+页面的 `code` 是业务编号，可复制修改
+[`browser-url-rules.example.json`](browser-url-rules.example.json)，通过环境变量指定例外规则：
 
 ```bash
 WAYLOG_BROWSER_URL_RULES=/absolute/path/browser-url-rules.json waylog export
@@ -97,12 +100,13 @@ WAYLOG_BROWSER_URL_RULES=/absolute/path/browser-url-rules.json waylog export
 WAYLOG_BROWSER_URL_RULES=/absolute/path/browser-url-rules.json waylog watch
 ```
 
-示例域名均为虚构，默认不启用任何放行规则。规则按 `origin`（协议、域名、端口）、
-`path` 和参数名精确匹配；`fragment_path` 存在时仅作用于对应 fragment 路由。
-例如 `/product` 的 `code` 可明确允许保存商品编号；登录/OAuth/回调路径仍隐藏所有值。
-token、ticket、password、state 等敏感参数，以及 next、redirect 等跳转参数，不能通过规则放行。
-搜索词也可能包含隐私，只有确认需要保存后再添加 `q`。规则文件缺失或解析失败时不放行任何参数，
-并仅输出通用警告。规则不会改写现有归档，旧记录不会自动脱敏。
+规则按 `origin`（协议、域名、端口）、`path` 和参数名精确匹配；
+`fragment_path` 存在时仅作用于对应 fragment 路由。示例域名为虚构，默认没有例外。
+已识别的凭据不能通过例外放行；登录/OAuth/回调路径的 `code` 也继续隐藏，
+这些页面上的普通分页等参数仍保留。配置缺失或无效时使用默认敏感参数规则，
+普通参数不受影响。自定义名字的秘密、未识别格式的嵌套 URL 和无参数名的 fragment
+可能无法识别；本功能不保证识别所有秘密。规则不会改写现有归档，
+已替换为 `REDACTED` 的普通值只能从原始备份或源数据恢复。
 
 隐私边界：URL 的 path、前端路由 path、页面标题和本机路径仍保留；非法 URL 按兼容规则原样返回。
 本功能不是全归档脱敏。AI 会话正文、标题、Gemini 思考内容可能含敏感信息，

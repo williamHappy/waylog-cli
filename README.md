@@ -89,19 +89,25 @@ Scans local provider storage on the current machine and exports sessions into a 
 
 WayLog now exports browser history into `browser-history/` by default alongside AI sessions. It currently supports Chrome and ChatGPT Atlas on macOS, plus Chrome on Windows. Browser history collection copies locked History databases to temp files before reading them and captures visit-level history records only. It does not capture page-level clickstream or tab focus behavior.
 
-Browser URLs retain query keys but hide values as `REDACTED` by default, including
-fragment parameters and nested redirects. Hash routes retain their path; unknown
-non-route fragments are hidden. URL usernames/passwords are removed. Both the URL
-field and record ID use the sanitized URL.
+Browser URLs hide known sensitive parameter values as `REDACTED`, while ordinary
+parameters retain their original values and encoding. For example,
+`/product?id=123&page=2&access_token=abc` becomes
+`/product?id=123&page=2&access_token=REDACTED`. Fragment parameters are treated the
+same way; ordinary hash routes and anchors remain intact. Nested HTTP(S) URLs and
+root-relative URLs with parameters are sanitized recursively, with a four-level
+limit. URL usernames/passwords are removed. Both URL and record ID use the result.
 
-To retain explicitly approved values, copy and edit
+Authorization `code` values are hidden by default because their meaning is
+ambiguous. To retain a verified product code in a specific URL scope, copy and edit
 [`browser-url-rules.example.json`](browser-url-rules.example.json), then run
 `WAYLOG_BROWSER_URL_RULES=/absolute/path/rules.json waylog export` (also supported
 by `watch`). Rules match the exact origin, path and parameter name; an optional
-`fragment_path` scopes the rule to a hash route. Example domains are fictional;
-no rules are enabled by default. Credentials, authentication callback parameters
-and redirect parameters remain hidden even if allowlisted. Invalid or unreadable
-rule files permit no values. Restart the process after changing rules.
+`fragment_path` scopes the exception to a hash route. Known credentials and codes
+on authentication callback paths cannot be released by an exception. Missing or
+invalid configuration uses the default sensitive-parameter policy, preserving
+ordinary parameters. Restart after changing rules. Unknown secret names, unsupported
+nested URL formats and opaque fragments may escape detection. Ordinary values
+previously replaced by `REDACTED` require original backups or source data to restore.
 
 This is URL parameter redaction, not full archive redaction: paths, browser titles,
 local filesystem paths and invalid URLs remain unchanged. AI message contents,
