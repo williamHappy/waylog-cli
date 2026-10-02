@@ -89,6 +89,32 @@ Scans local provider storage on the current machine and exports sessions into a 
 
 WayLog now exports browser history into `browser-history/` by default alongside AI sessions. It currently supports Chrome and ChatGPT Atlas on macOS, plus Chrome on Windows. Browser history collection copies locked History databases to temp files before reading them and captures visit-level history records only. It does not capture page-level clickstream or tab focus behavior.
 
+Browser URLs retain query keys but hide values as `REDACTED` by default, including
+fragment parameters and nested redirects. Hash routes retain their path; unknown
+non-route fragments are hidden. URL usernames/passwords are removed. Both the URL
+field and record ID use the sanitized URL.
+
+To retain explicitly approved values, copy and edit
+[`browser-url-rules.example.json`](browser-url-rules.example.json), then run
+`WAYLOG_BROWSER_URL_RULES=/absolute/path/rules.json waylog export` (also supported
+by `watch`). Rules match the exact origin, path and parameter name; an optional
+`fragment_path` scopes the rule to a hash route. Example domains are fictional;
+no rules are enabled by default. Credentials, authentication callback parameters
+and redirect parameters remain hidden even if allowlisted. Invalid or unreadable
+rule files permit no values. Restart the process after changing rules.
+
+This is URL parameter redaction, not full archive redaction: paths, browser titles,
+local filesystem paths and invalid URLs remain unchanged. AI message contents,
+titles and Gemini thoughts may contain secrets; AI `.raw.*` files copy the source
+session verbatim, including events omitted from Markdown. `publish` uploads all
+archive files without a secret scan. Temporary History database copies retain
+original URLs until removed; abnormal termination may leave a copy behind.
+Existing archives are not migrated. A clean browser rebuild requires removing both
+`browser-history/` and `indexes/browser-history.jsonl` with collectors stopped;
+`--force` alone merges old records. Only history still in the browser database can
+be rebuilt, and Git history is unaffected. See [Chinese documentation](README_zh.md)
+for examples and privacy boundaries.
+
 If your browser history is already synced across devices and you only want one machine to archive it, use `--no-browser` on other machines to export AI sessions without browser history.
 
 Before writing to the archive, WayLog skips a default set of low-value sessions:

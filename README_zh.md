@@ -82,6 +82,37 @@ waylog pull
 
 如果你的 Chrome 历史已经通过账户在多设备间同步，只希望其中一台机器负责归档浏览器历史，可以在其他机器上使用 `--no-browser`，只归档 AI 会话。
 
+浏览器 URL 默认保留参数名，但把参数值替换为 `REDACTED`，例如
+`/callback?code=abc&state=xyz` → `/callback?code=REDACTED&state=REDACTED`。
+fragment 中的参数同样处理；`#/orders?page=2` 保留 `/orders` 路由，默认隐藏分页值；
+无法识别的非路由 fragment 整体隐藏。嵌套跳转地址默认整值隐藏，URL 中的用户名、密码也会删除。
+`record_id` 使用同一个脱敏后的 URL，访问时间和 visit ID 继续区分不同访问。
+
+如需保留已确认安全的搜索、分页或商品参数，可复制并修改
+[`browser-url-rules.example.json`](browser-url-rules.example.json)，通过环境变量指定规则文件：
+
+```bash
+WAYLOG_BROWSER_URL_RULES=/absolute/path/browser-url-rules.json waylog export
+# watch 同样支持该环境变量；修改规则后需要重启进程
+WAYLOG_BROWSER_URL_RULES=/absolute/path/browser-url-rules.json waylog watch
+```
+
+示例域名均为虚构，默认不启用任何放行规则。规则按 `origin`（协议、域名、端口）、
+`path` 和参数名精确匹配；`fragment_path` 存在时仅作用于对应 fragment 路由。
+例如 `/product` 的 `code` 可明确允许保存商品编号；登录/OAuth/回调路径仍隐藏所有值。
+token、ticket、password、state 等敏感参数，以及 next、redirect 等跳转参数，不能通过规则放行。
+搜索词也可能包含隐私，只有确认需要保存后再添加 `q`。规则文件缺失或解析失败时不放行任何参数，
+并仅输出通用警告。规则不会改写现有归档，旧记录不会自动脱敏。
+
+隐私边界：URL 的 path、前端路由 path、页面标题和本机路径仍保留；非法 URL 按兼容规则原样返回。
+本功能不是全归档脱敏。AI 会话正文、标题、Gemini 思考内容可能含敏感信息，
+而 `.raw.*` 会直接复制源会话文件，包含未进入 Markdown 的原始事件；
+`publish` 会上传归档目录内所有文件，不进行敏感信息检查。
+浏览器 History 临时副本仍包含原始 URL，正常读取后删除，进程异常退出可能留下副本。
+如要重建旧浏览器归档，需先停止旧采集进程，同时清理 `browser-history/` 和
+`indexes/browser-history.jsonl` 后重新导出；仅使用 `--force` 会合并旧记录。
+重建仅能恢复浏览器数据库仍保留的历史，不会清除 Git 历史。
+
 在写入归档前，WayLog 会默认排除一批低价值会话：
 
 - `hi` / `hello` 这类纯问候

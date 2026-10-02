@@ -1,6 +1,6 @@
 [package]
 name = "waylog"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 authors = ["WayLog Contributors"]
 description = "Automatically save chats from Claude, Codex, and Gemini CLI to local Markdown files."
@@ -64,6 +64,7 @@ regex = "1.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
+url = "2.5"
 
 [dev-dependencies]
 tempfile = "3.8"

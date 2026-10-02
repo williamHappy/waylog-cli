@@ -1,6 +1,7 @@
 use crate::browser::BrowserVisitRecord;
 use crate::cli::Browser;
 use crate::error::{Result, WaylogError};
+use crate::utils::url::sanitize_url;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
@@ -280,6 +281,7 @@ fn read_profile_visits_from_copy(
             let from_visit: Option<i64> = row.get(2)?;
             let transition: Option<i64> = row.get(3)?;
             let url: String = row.get(4)?;
+            let url = sanitize_url(&url);
             let title: String = row.get(5)?;
             let visit_count: i64 = row.get(6)?;
             let typed_count: i64 = row.get(7)?;
@@ -437,7 +439,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO urls (id, url, title, visit_count, typed_count) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![1i64, "https://example.com", "Example", 3i64, 1i64],
+                params![1i64, "https://example.com?code=secret&refresh_token=secret&access_token=secret&id_token=secret&_casTicket=secret#f", "Example", 3i64, 1i64],
             )
             .unwrap();
         connection
@@ -453,7 +455,15 @@ mod tests {
         assert_eq!(visits.len(), 1);
         assert_eq!(visits[0].browser, "atlas");
         assert_eq!(visits[0].profile, "Default");
-        assert_eq!(visits[0].url, "https://example.com");
+        let expected_url = "https://example.com?code=REDACTED&refresh_token=REDACTED&access_token=REDACTED&id_token=REDACTED&_casTicket=REDACTED#REDACTED";
+        assert_eq!(visits[0].url, expected_url);
+        assert_eq!(
+            visits[0].record_id,
+            format!(
+                "atlas:Default:{}:{expected_url}:9",
+                chrome_datetime_to_micros(Utc.with_ymd_and_hms(2026, 5, 3, 2, 0, 0).unwrap())
+            )
+        );
         assert_eq!(visits[0].title, "Example");
         assert_eq!(visits[0].visit_count, 3);
         assert_eq!(visits[0].typed_count, 1);
