@@ -112,7 +112,7 @@ mod tests {
     use super::{browser_enabled, session_matches_time_range, TimeRangeFilter};
     use crate::cli::Browser;
     use crate::providers::base::{ChatMessage, ChatSession, MessageMetadata, MessageRole};
-    use chrono::{TimeZone, Utc};
+    use chrono::{Local, TimeZone, Utc};
     use std::path::PathBuf;
 
     #[test]
@@ -143,11 +143,11 @@ mod tests {
 
         assert_eq!(
             filter.updated_from,
-            Some(Utc.with_ymd_and_hms(2026, 5, 11, 16, 0, 0).unwrap())
+            Some(Local.with_ymd_and_hms(2026, 5, 12, 0, 0, 0).unwrap().with_timezone(&Utc))
         );
         assert_eq!(
             filter.updated_to,
-            Some(Utc.with_ymd_and_hms(2026, 5, 12, 15, 59, 59).unwrap())
+            Some(Local.with_ymd_and_hms(2026, 5, 12, 23, 59, 59).unwrap().with_timezone(&Utc))
         );
     }
 
@@ -159,11 +159,11 @@ mod tests {
 
         assert_eq!(
             filter.updated_from,
-            Some(Utc.with_ymd_and_hms(2026, 5, 11, 16, 0, 0).unwrap())
+            Some(Local.with_ymd_and_hms(2026, 5, 12, 0, 0, 0).unwrap().with_timezone(&Utc))
         );
         assert_eq!(
             filter.updated_to,
-            Some(Utc.with_ymd_and_hms(2026, 5, 13, 15, 59, 59).unwrap())
+            Some(Local.with_ymd_and_hms(2026, 5, 13, 23, 59, 59).unwrap().with_timezone(&Utc))
         );
     }
 
