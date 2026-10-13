@@ -366,13 +366,23 @@ class Service:
             data["consecutive_failures"] = 0
             data["paused"] = False
             data.pop("pause_reason", None)
-            data["next_retry_epoch"] = data["last_attempt_epoch"] + self.network_spacing
+            data["next_retry_epoch"] = self.success_deadline(data["last_attempt_epoch"])
         else:
             data["next_retry_epoch"] = max(data["next_retry_epoch"],
                 time.time() + self.retry_wait(data["consecutive_failures"]))
         self.save_network_state(data)
         self._network_active = False
         self._lfs_ready_for_push = False
+
+    def success_deadline(self, attempt_epoch):
+        # Mac's default scheduler runs at Minute=0. Successful rounds occupy a
+        # calendar hour, so preparation/launch latency cannot skip the next hour.
+        # Failure/interruption cooldowns keep their strict elapsed-time policy.
+        if sys.platform == "darwin" and self.args.interval == 3600 and self.network_spacing == 3600:
+            hour = datetime.datetime.fromtimestamp(attempt_epoch).astimezone().replace(
+                minute=0, second=0, microsecond=0)
+            return hour.timestamp() + 3600
+        return attempt_epoch + self.network_spacing
 
     def retry_wait(self, failures):
         return max(self.network_spacing, self.retry_delays[min(max(0, failures - 1), len(self.retry_delays) - 1)])

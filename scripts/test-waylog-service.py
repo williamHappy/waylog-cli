@@ -1248,5 +1248,54 @@ class CliRoutingTests(unittest.TestCase):
         self.assertFalse(args.isolated)
 
 
+class MacCalendarCooldownTests(unittest.TestCase):
+    def setUp(self):
+        import argparse
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        args = argparse.Namespace(**module.config_defaults(windows=False))
+        args.git_repo = None
+        args.archive_dir = str(Path(self.temp.name) / 'archive')
+        args.state_dir = str(Path(self.temp.name) / 'state')
+        self.service = module.Service(args)
+        self.hour = module.datetime.datetime.now().astimezone().replace(
+            minute=0, second=0, microsecond=0).timestamp()
+
+    def finish(self, success, attempt, end, failures=1):
+        self.service.save_network_state(dict(consecutive_failures=failures,
+            paused=failures >= self.service.retry_max_failures,
+            in_flight=True, last_attempt_epoch=attempt,
+            next_retry_epoch=attempt + self.service.retry_wait(failures)))
+        self.service._network_active = True
+        with mock.patch.object(module.sys, 'platform', 'darwin'), \
+                mock.patch.object(module.time, 'time', return_value=end):
+            self.service.finish_network(success)
+        return self.service.network_state()
+
+    def test_mac_success_allows_next_hour_but_not_same_hour(self):
+        data = self.finish(True, self.hour + 12, self.hour + 1500)
+        self.assertEqual(data['next_retry_epoch'], self.hour + 3600)
+        with mock.patch.object(module.time, 'time', return_value=self.hour + 1800):
+            self.assertFalse(self.service.network_allowed())
+        with mock.patch.object(module.time, 'time', return_value=self.hour + 3600):
+            self.assertTrue(self.service.network_allowed())
+
+    def test_mac_failure_keeps_one_and_two_hour_delays_and_pause(self):
+        for failures, delay in ((1, 3600), (2, 7200), (3, 7200)):
+            data = self.finish(False, self.hour + 12, self.hour + 1500, failures)
+            self.assertEqual(data['next_retry_epoch'], self.hour + 1500 + delay)
+            with mock.patch.object(module.time, 'time', return_value=self.hour + 3600):
+                self.assertFalse(self.service.network_allowed())
+        with mock.patch.object(module.time, 'time', return_value=data['next_retry_epoch'] + 1):
+            self.assertFalse(self.service.network_allowed())
+
+    def test_windows_success_and_custom_spacing_are_unchanged(self):
+        with mock.patch.object(module.sys, 'platform', 'win32'):
+            self.assertEqual(self.service.success_deadline(self.hour + 12), self.hour + 3612)
+        self.service.network_spacing = 7200
+        with mock.patch.object(module.sys, 'platform', 'darwin'):
+            self.assertEqual(self.service.success_deadline(self.hour + 12), self.hour + 7212)
+
+
 if __name__ == "__main__":
     unittest.main()
