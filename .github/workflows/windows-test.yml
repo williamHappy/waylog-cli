@@ -16,11 +16,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Verify PowerShell 5.1 configuration
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            $configText = & ./scripts/waylog-service.windows.ps1 config -ConfigPath ./scripts/waylog-service.windows.example.json
+            if ($LASTEXITCODE -ne 0) { throw 'PowerShell config check failed' }
+            $config = ($configText | Out-String) | ConvertFrom-Json
+            if ($config.git_repo -ne 'D:\wangct\wk-me\i-raw-data-sparse') { throw 'Wrong Windows path' }
+            if ($config.repo_mode -ne 'sparse' -or $config.pull_on_idle -ne $false) { throw 'Wrong Windows sync policy' }
+            if ($config.repo_path -ne 'ai/raw/wk-jzx') { throw 'Wrong device directory' }
+          } catch {
+            Write-Host $_.ScriptStackTrace
+            throw
+          }
       - name: Test on native Windows
         run: cargo test --locked --all-features
       - name: Build Windows executable
         run: cargo build --locked --release
-      - name: Verify binary and PowerShell 5.1 configuration
+      - name: Verify binary version and flags
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -33,12 +48,6 @@ jobs:
             if (-not $helpText.Contains($flag)) { throw "Missing $flag" }
           }
           if ($helpText.Contains('--instance-lock-file')) { throw 'Mac-only flag exposed on Windows' }
-          $configText = & ./scripts/waylog-service.windows.ps1 config -ConfigPath ./scripts/waylog-service.windows.example.json
-          if ($LASTEXITCODE -ne 0) { throw 'PowerShell config check failed' }
-          $config = ($configText | Out-String) | ConvertFrom-Json
-          if ($config.git_repo -ne 'D:\wangct\wk-me\i-raw-data-sparse') { throw 'Wrong Windows path' }
-          if ($config.repo_mode -ne 'sparse' -or $config.pull_on_idle -ne $false) { throw 'Wrong Windows sync policy' }
-          if ($config.repo_path -ne 'ai/raw/wk-jzx') { throw 'Wrong device directory' }
       - name: Package test bundle
         shell: pwsh
         run: |
