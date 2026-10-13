@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use meta::{BrowserHistoryIndexEntry, SessionIndexEntry};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -50,13 +51,14 @@ impl ArchiveWriter {
     ) -> Result<ArchiveExportResult> {
         let title = session_filter::session_title(session);
         let stable_key = format!("{}:{}", session.provider, session.session_id);
+        let suffix = format!("{:x}", Sha256::digest(stable_key.as_bytes()));
         let readable_base = layout::build_readable_base(
             &session.started_at.to_rfc3339(),
             &session.provider,
             &title,
-            None,
+            Some(&suffix[..12]),
         );
-        let paths = layout::archive_paths(&self.archive_dir, &readable_base, raw_extension);
+        let mut paths = layout::archive_paths(&self.archive_dir, &readable_base, raw_extension);
 
         if let Some(reason) = session_filter::archive_skip_reason(session) {
             return Ok(ArchiveExportResult {
@@ -78,7 +80,32 @@ impl ArchiveWriter {
 
         let markdown = crate::exporter::generate_markdown(session);
         let mut index_entries = read_session_index_entries(&self.archive_dir).await?;
+        let codex_source = if session.provider == "codex" {
+            crate::providers::codex::read_source_kind(source_path).await?
+        } else {
+            None
+        };
         if let Some(existing_entry) = index_entries.get(&stable_key) {
+            let shared_path = index_entries.values().any(|entry| {
+                entry.stable_key != stable_key
+                    && (entry.markdown_path == existing_entry.markdown_path
+                        || entry.raw_path == existing_entry.raw_path)
+            });
+            let old_md = PathBuf::from(&existing_entry.markdown_path);
+            let old_raw = PathBuf::from(&existing_entry.raw_path);
+            let sessions_dir = self.archive_dir.join("sessions");
+            // Freeze a healthy existing path; only rename changed titles, collisions or relocated paths.
+            if !shared_path
+                && existing_entry.title == title
+                && old_md.parent() == Some(sessions_dir.as_path())
+                && old_raw.parent() == Some(sessions_dir.as_path())
+            {
+                paths = layout::ArchivePaths {
+                    markdown_path: old_md.clone(),
+                    raw_path: old_raw.clone(),
+                };
+            }
+            let renamed = paths.markdown_path != old_md || paths.raw_path != old_raw;
             // 同一个逻辑会话被 resume/fork 后会生成多个源文件，且它们解析出的
             // session_id 相同（如 Claude `--resume`），从而碰撞到同一个 stable_key。
             // 若放任每个文件都覆盖索引项，watch 每个周期都会反复重写、刷新
@@ -86,13 +113,21 @@ impl ArchiveWriter {
             // 去重规则：同一源文件仅在内容真正变化时重写；不同源文件只有在“更完整”
             // （消息更多）时才接管，否则跳过——以此为每个会话确定唯一赢家。
             let same_source = existing_entry.source_path == source_path.display().to_string();
-            let should_write = if same_source {
+            let should_write = if renamed || !paths.raw_path.exists() {
+                true
+            } else if same_source {
                 same_source_session_changed(existing_entry, &markdown, session.messages.len())
                     .await?
             } else {
                 session.messages.len() > existing_entry.message_count
             };
             if !should_write {
+                if existing_entry.codex_source != codex_source {
+                    let mut updated = existing_entry.clone();
+                    updated.codex_source = codex_source;
+                    index_entries.insert(stable_key.clone(), updated);
+                    write_session_index_entries(&self.archive_dir, &index_entries).await?;
+                }
                 remove_legacy_meta_file(&paths.markdown_path).await?;
                 return Ok(ArchiveExportResult {
                     paths,
@@ -121,6 +156,7 @@ impl ArchiveWriter {
             markdown_path: paths.markdown_path.display().to_string(),
             raw_path: paths.raw_path.display().to_string(),
             exported_at: crate::utils::time::format_local_rfc3339(&Utc::now()),
+            codex_source,
         };
 
         index_entries.insert(stable_key.clone(), entry);
@@ -357,6 +393,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
+    use tokio::fs;
 
     fn test_session() -> ChatSession {
         let now = Utc::now();
@@ -382,6 +419,82 @@ mod tests {
                     metadata: MessageMetadata::default(),
                 },
             ],
+        }
+    }
+
+    #[tokio::test]
+    async fn different_ids_same_title_and_time_never_share_a_file() {
+        let tmp = TempDir::new().unwrap();
+        let writer = ArchiveWriter::new(tmp.path().join("archive"));
+        let mut a = test_session();
+        a.provider = "claude".into();
+        a.session_id = "one".into();
+        let mut b = a.clone();
+        b.session_id = "two".into();
+        b.messages[1].content = "第二段独立会话的回答".into();
+        let source_a = tmp.path().join("one.jsonl");
+        let source_b = tmp.path().join("two.jsonl");
+        fs::write(&source_a, "first source").await.unwrap();
+        fs::write(&source_b, "second source").await.unwrap();
+        let first = writer.export_session(&a, &source_a, "jsonl").await.unwrap();
+        let second = writer.export_session(&b, &source_b, "jsonl").await.unwrap();
+        assert_ne!(first.paths.markdown_path, second.paths.markdown_path);
+        assert_eq!(
+            fs::read_to_string(&first.paths.raw_path).await.unwrap(),
+            "first source"
+        );
+        assert_eq!(
+            fs::read_to_string(&second.paths.raw_path).await.unwrap(),
+            "second source"
+        );
+        assert!(
+            !writer
+                .export_session(&a, &source_a, "jsonl")
+                .await
+                .unwrap()
+                .written
+        );
+        assert!(
+            !writer
+                .export_session(&b, &source_b, "jsonl")
+                .await
+                .unwrap()
+                .written
+        );
+        // Simulate an old index where two IDs referenced the same overwritten files.
+        let mut legacy = super::read_session_index_entries(&writer.archive_dir)
+            .await
+            .unwrap();
+        let first_entry = legacy.get("claude:one").unwrap().clone();
+        let second_entry = legacy.get_mut("claude:two").unwrap();
+        second_entry.markdown_path = first_entry.markdown_path;
+        second_entry.raw_path = first_entry.raw_path;
+        super::write_session_index_entries(&writer.archive_dir, &legacy)
+            .await
+            .unwrap();
+        writer.export_session(&a, &source_a, "jsonl").await.unwrap();
+        assert!(
+            writer
+                .export_session(&b, &source_b, "jsonl")
+                .await
+                .unwrap()
+                .written
+        );
+        let repaired = super::read_session_index_entries(&writer.archive_dir)
+            .await
+            .unwrap();
+        assert_ne!(
+            repaired["claude:one"].raw_path,
+            repaired["claude:two"].raw_path
+        );
+        for (key, expected) in [
+            ("claude:one", "first source"),
+            ("claude:two", "second source"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(&repaired[key].raw_path).await.unwrap(),
+                expected
+            );
         }
     }
 
@@ -595,6 +708,7 @@ mod tests {
         entries.insert(
             "codex:rollout-2026-03-10T15-42-52-z".to_string(),
             SessionIndexEntry {
+                codex_source: None,
                 stable_key: "codex:rollout-2026-03-10T15-42-52-z".to_string(),
                 provider: "codex".to_string(),
                 session_id: "rollout-2026-03-10T15-42-52-z".to_string(),
@@ -613,6 +727,7 @@ mod tests {
         entries.insert(
             "codex:rollout-2026-06-24T17-15-55-a".to_string(),
             SessionIndexEntry {
+                codex_source: None,
                 stable_key: "codex:rollout-2026-06-24T17-15-55-a".to_string(),
                 provider: "codex".to_string(),
                 session_id: "rollout-2026-06-24T17-15-55-a".to_string(),

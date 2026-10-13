@@ -188,6 +188,10 @@ Windows 原生 PowerShell、任务调度、Job Object、锁、SSH/LFS 仍需在 
 
 Mac 当前使用固定安装路径 `~/.cargo/bin/waylog`；先 stop，准备保留定制功能的新源码，再离线 cargo install，检查原生后台参数和安装版权限，运行 doctor/dry-run，通过后 start。仅 cargo build 不会更新当前服务用的安装版；不默认备份旧二进制。
 
+会话归档质量规则：Codex Guardian 内部审批记录不作为会话导出；实际子任务仍导出，索引的可选 `codex_source` 保存来源及父任务信息。单独注入的 `external_codex_apps_open_page` 页面上下文不用于会话标题，原始日志仍完整保留；真实提问中的 `null` 不过滤。新归档文件名附带稳定会话标识的哈希后缀，避免同时间同标题的不同会话覆盖。已有无冲突且标题正确的路径保持不变；历史冲突或错误标题重新导出后可能产生旧文件，需在停止服务、备份归档后核对索引再清理，不能按标题直接合并不同会话。
+
+Mac 只读取本机日志。Mac 客户端中可见的 Windows 远端任务不会因此成为 Mac 本地源日志；应由 Windows 采集到其独占目录，再由 Mac 拉取供日报使用。
+
 同路径更新不需要修改 JSON；更换路径时须先用原配置 stop，再更新配置和系统授权。更新不清理归档、日志或重试状态，也不绕过冷却。
 
 历史大文件问题是归档仓库内容问题，单独升级 Waylog 程序不会把已经提交的普通 Git blob 自动转成 LFS。未来脚本自己的待推送提交可按上面的 GH001 自动恢复；人工/iBuddy 的未推送历史仍需手动处理。本次没有对真实仓库运行迁移。GitHub 对超过 100 MiB 的普通 Git 文件拒绝接收，增加一次删除/追踪提交不能消除旧历史里的 blob，参见 [GitHub 大文件说明](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github) 和 [Git LFS migrate 官方文档](https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-migrate.adoc)。

@@ -15,6 +15,8 @@ pub struct SessionIndexEntry {
     pub markdown_path: String,
     pub raw_path: String,
     pub exported_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_source: Option<serde_json::Value>,
 }
 
 impl SessionIndexEntry {
@@ -51,6 +53,7 @@ mod tests {
     #[test]
     fn test_should_not_rewrite_when_only_source_mtime_changes() {
         let old_meta = SessionIndexEntry {
+            codex_source: None,
             stable_key: "codex:session-1".to_string(),
             provider: "codex".to_string(),
             session_id: "session-1".to_string(),
@@ -73,6 +76,7 @@ mod tests {
     #[test]
     fn test_should_rewrite_when_message_count_grows() {
         let old_meta = SessionIndexEntry {
+            codex_source: None,
             stable_key: "claude:session-2".to_string(),
             provider: "claude".to_string(),
             session_id: "session-2".to_string(),
@@ -95,6 +99,7 @@ mod tests {
     #[test]
     fn test_should_not_rewrite_when_source_is_unchanged() {
         let old_meta = SessionIndexEntry {
+            codex_source: None,
             stable_key: "claude:session-2".to_string(),
             provider: "claude".to_string(),
             session_id: "session-2".to_string(),

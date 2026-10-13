@@ -125,6 +125,17 @@ impl Provider for CodexProvider {
 
                 match event.event_type.as_str() {
                     "session_meta" | "turn_context" => {
+                        if event.event_type == "session_meta"
+                            && event
+                                .payload
+                                .as_ref()
+                                .and_then(|p| p.source.as_ref())
+                                .is_some_and(is_guardian_source)
+                        {
+                            // Guardian is Codex's internal approval agent, not a user conversation.
+                            messages.clear();
+                            break;
+                        }
                         if let Some(cwd) = event.payload.as_ref().and_then(|p| p.cwd.clone()) {
                             session_project_path = PathBuf::from(cwd);
                         }
@@ -300,6 +311,9 @@ impl CodexProvider {
             if content.contains("<INSTRUCTIONS>") || content.contains("# AGENTS.md instructions") {
                 return Ok(None);
             }
+            if is_page_context(&content) {
+                return Ok(None);
+            }
         }
 
         Ok(Some(ChatMessage {
@@ -331,6 +345,39 @@ struct CodexPayload {
     role: Option<String>,
     cwd: Option<String>,
     content: Option<Vec<CodexContent>>,
+    source: Option<serde_json::Value>,
+}
+
+fn is_guardian_source(source: &serde_json::Value) -> bool {
+    source.pointer("/subagent/other").and_then(|v| v.as_str()) == Some("guardian")
+}
+
+fn is_page_context(content: &str) -> bool {
+    let text = content.trim();
+    let Some(inner) = text
+        .strip_prefix("<external_codex_apps_open_page>")
+        .and_then(|s| s.strip_suffix("</external_codex_apps_open_page>"))
+    else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(inner)
+        .is_ok_and(|v| v.is_object() && v.get("page_id").is_some())
+}
+
+/// Preserve source/parent information while keeping rollout identity separate from inherited metadata.
+pub(crate) async fn read_source_kind(file_path: &Path) -> Result<Option<serde_json::Value>> {
+    let mut lines = BufReader::new(fs::File::open(file_path).await?).lines();
+    for _ in 0..32 {
+        let Some(line) = lines.next_line().await? else {
+            break;
+        };
+        if let Ok(event) = serde_json::from_str::<CodexEvent>(&line) {
+            if event.event_type == "session_meta" {
+                return Ok(event.payload.and_then(|p| p.source));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,4 +386,74 @@ struct CodexContent {
     #[allow(dead_code)]
     content_type: String,
     text: Option<String>,
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+    use crate::session_filter::session_title;
+
+    async fn fixture(source: serde_json::Value, texts: &[&str]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rollout-thread.jsonl");
+        let mut events = vec![
+            serde_json::json!({"type":"session_meta","timestamp":"2026-10-13T01:00:00Z","payload":{"cwd":"/tmp/project","source":source}}),
+        ];
+        for text in texts {
+            events.push(serde_json::json!({"type":"response_item","timestamp":"2026-10-13T01:01:00Z","payload":{"role":"user","content":[{"type":"input_text","text":text}]}}));
+        }
+        fs::write(
+            &path,
+            events
+                .iter()
+                .map(|e| e.to_string() + "\n")
+                .collect::<String>(),
+        )
+        .await
+        .unwrap();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn guardian_is_excluded_but_child_task_and_parent_are_preserved() {
+        let (_dir, path) = fixture(
+            serde_json::json!({"subagent":{"other":"guardian"}}),
+            &["审批这次命令是否可以执行"],
+        )
+        .await;
+        assert!(CodexProvider::new()
+            .parse_session(&path)
+            .await
+            .unwrap()
+            .messages
+            .is_empty());
+        let source = serde_json::json!({"subagent":{"thread_spawn":{"parent_thread_id":"parent","depth":1}}});
+        let (_dir, path) =
+            fixture(source.clone(), &["请检查采集目录内的索引映射和文件一致性"]).await;
+        assert_eq!(
+            CodexProvider::new()
+                .parse_session(&path)
+                .await
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
+        assert_eq!(read_source_kind(&path).await.unwrap(), Some(source));
+    }
+
+    #[tokio::test]
+    async fn page_injection_is_not_a_title_and_real_null_question_is_preserved() {
+        let page =
+            "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>";
+        let (_dir, path) = fixture(
+            serde_json::json!("vscode"),
+            &[page, "请解释这个接口为什么返回 null"],
+        )
+        .await;
+        let session = CodexProvider::new().parse_session(&path).await.unwrap();
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session_title(&session), "请解释这个接口为什么返回 null");
+        assert!(!is_page_context("请解释 <external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page> 的意思"));
+    }
 }
