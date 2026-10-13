@@ -1,0 +1,63 @@
+name: Windows Test Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test on native Windows
+        run: cargo test --locked --all-features
+      - name: Build Windows executable
+        run: cargo build --locked --release
+      - name: Verify binary and PowerShell 5.1 configuration
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'target/release/waylog.exe').Path
+          $version = (& $exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'waylog 0.2.8') { throw 'Wrong binary version' }
+          $helpText = (& $exe watch --help | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'watch help failed' }
+          foreach ($flag in @('--archive-lock-file', '--git-dir', '--interval-seconds')) {
+            if (-not $helpText.Contains($flag)) { throw "Missing $flag" }
+          }
+          if ($helpText.Contains('--instance-lock-file')) { throw 'Mac-only flag exposed on Windows' }
+          $configText = & ./scripts/waylog-service.windows.ps1 config -ConfigPath ./scripts/waylog-service.windows.example.json
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell config check failed' }
+          $config = ($configText | Out-String) | ConvertFrom-Json
+          if ($config.git_repo -ne 'D:\wangct\wk-me\i-raw-data-sparse') { throw 'Wrong Windows path' }
+          if ($config.repo_mode -ne 'sparse' -or $config.pull_on_idle -ne $false) { throw 'Wrong Windows sync policy' }
+          if ($config.repo_path -ne 'ai/raw/wk-jzx') { throw 'Wrong device directory' }
+      - name: Package test bundle
+        shell: pwsh
+        run: |
+          $bundle = 'waylog-0.2.8-windows-x64-test'
+          New-Item -ItemType Directory -Path "$bundle/scripts", "$bundle/docs" | Out-Null
+          Copy-Item target/release/waylog.exe "$bundle/waylog.exe"
+          Copy-Item scripts/waylog-service.py, scripts/waylog-service.windows.ps1, scripts/waylog-service.windows.example.json "$bundle/scripts/"
+          Copy-Item docs/waylog-service-windows.md, docs/waylog-windows-test.md "$bundle/docs/"
+          $manifest = [ordered]@{
+            version = '0.2.8'
+            commit = '${{ github.sha }}'
+            binary_sha256 = (Get-FileHash "$bundle/waylog.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+            checks = @('Windows Rust tests', 'release build', 'CLI flags', 'PowerShell 5.1 JSONC config')
+          }
+          $manifest | ConvertTo-Json | Set-Content "$bundle/build-info.json" -Encoding utf8
+          Compress-Archive -Path $bundle -DestinationPath "$bundle.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waylog-0.2.8-windows-x64-test
+          path: waylog-0.2.8-windows-x64-test.zip
+          retention-days: 14
+          if-no-files-found: error
