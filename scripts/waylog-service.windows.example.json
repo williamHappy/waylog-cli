@@ -1,0 +1,23 @@
+{
+  "archive_dir": null, // 采集目录；null 自动取 git_repo/repo_path。默认 null
+  "remote": "git@github.com:williamHappy/i-raw-data.git", // GitHub 仓库 SSH 地址；不用保存密码。默认 git@github.com:williamHappy/i-raw-data.git
+  "branch": "main", // 同步分支。默认 main
+  "interval": 3600, // 同步间隔，秒；修改后 stop/start。默认 3600（一小时）
+  "timeout": 300, // 单条命令及等待采集锁的超时，秒。默认 300
+  "watch_interval": 30, // watch 采集间隔，秒；修改后 stop/start。默认 30
+  "no_browser": false, // true 只采集会话，false 同时采集浏览记录。默认 false
+  "retry_max_failures": 3, // 连续联网失败达到次数上限后暂停。默认 3
+  "retry_delays": [3600, 7200], // 第 1、2 等次失败后的等待秒数，超出列表沿用最后一项。默认 [3600, 7200]
+  "minimum_network_interval": 3600, // 联网间隔下限，秒；与 interval 取较大值。默认 3600
+  "git_name": "williamHappy", // 自动提交作者姓名。默认 williamHappy
+  "git_email": "williamHappy@users.noreply.github.com", // 自动提交作者邮箱。默认 williamHappy@users.noreply.github.com
+  "git": "git", // Git 程序名或完整路径。默认 git
+  "git_repo": "D:\\wangct\\wk-me\\i-raw-data-sparse", // Git 仓库根目录；修改后 stop/start。默认 D:/wangct/wk-me/i-raw-data-sparse
+  "repo_path": "ai/raw/wk-jzx", // 本机独占的仓库内相对目录。默认 ai/raw/wk-jzx
+  "repo_mode": "sparse", // full 完整工作区，sparse 部分克隆＋稀疏检出。默认 sparse
+  "pull_on_idle": false, // 无本机变化、无积压提交时是否拉取。默认 false
+  "state_dir": "%LOCALAPPDATA%\\waylog-service", // 日志、锁和重试状态目录，须在仓库外；修改前先 stop。默认 %LOCALAPPDATA%/waylog-service
+  "python": "python", // Python 3.9+ 程序；Windows 入口使用此设置，Mac 使用调用入口的解释器。默认 python
+  "ssh": "%WINDIR%\\System32\\OpenSSH\\ssh.exe", // 系统 SSH 路径，配合系统 agent/Keychain。默认 %WINDIR%/System32/OpenSSH/ssh.exe
+  "waylog": "%USERPROFILE%\\.cargo\\bin\\waylog.exe" // 新版 Waylog 路径；更换程序前先 stop，检查通过后 start。默认 %USERPROFILE%/.cargo/bin/waylog.exe
+}

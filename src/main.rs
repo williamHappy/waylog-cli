@@ -8,6 +8,8 @@ mod github;
 mod init;
 mod output;
 mod providers;
+#[cfg(target_os = "macos")]
+mod service_log;
 mod session;
 mod session_filter;
 pub mod synchronizer;
@@ -64,6 +66,19 @@ async fn main() {
         let (project_root, is_new_project) = init::resolve_project_root(&cli.command, &mut output)?;
 
         // 2. Setup logging (only creates log file if verbose)
+        #[cfg(target_os = "macos")]
+        if let Commands::Watch {
+            service_log_file: Some(log_path),
+            ..
+        } = &cli.command
+        {
+            let log = service_log::ServiceLog::open(log_path, 5 * 1024 * 1024, 3)?;
+            output.redirect_service_log(log.clone());
+            log.setup_tracing(cli.verbose)?;
+        } else {
+            init::setup_logging(&project_root, cli.verbose, cli.quiet)?;
+        }
+        #[cfg(not(target_os = "macos"))]
         init::setup_logging(&project_root, cli.verbose, cli.quiet)?;
 
         // 3. Log new project initialization if needed
@@ -114,8 +129,28 @@ async fn main() {
                 browser,
                 no_browser,
                 archive_dir,
+                archive_lock_file,
+                git_dir,
+                interval_seconds,
+                #[cfg(target_os = "macos")]
+                instance_lock_file,
+                ..
             } => {
-                handle_watch(provider, browser, no_browser, archive_dir, &mut output).await?;
+                handle_watch(
+                    provider,
+                    browser,
+                    no_browser,
+                    archive_dir,
+                    commands::watch::WatchCoordination {
+                        archive_lock_file,
+                        git_dir,
+                        interval_seconds,
+                        #[cfg(target_os = "macos")]
+                        instance_lock_file,
+                    },
+                    &mut output,
+                )
+                .await?;
             }
             Commands::Publish {
                 archive_dir,

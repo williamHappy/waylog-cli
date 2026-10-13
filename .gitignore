@@ -22,3 +22,6 @@ Thumbs.db
 *.md.test
 *.code-workspace
 .cursor/
+/scripts/waylog-service.windows.json
+/scripts/waylog-service.macos.json
+/scripts/__pycache__/

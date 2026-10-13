@@ -12,6 +12,8 @@ WayLog CLI is a lightweight tool written in Rust that automatically saves your A
 Platform quickstart:
 [macOS / Windows Source-Build Quickstart (Chinese)](docs/quickstart-macos-windows.md)
 
+[后台采集服务：安装、升级、重启与检查](docs/waylog-upgrade.md)
+
 ---
 
 ## ✨ Features

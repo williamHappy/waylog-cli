@@ -9,8 +9,8 @@ pub mod run;
 /// Output handler for user-facing messages
 /// Uses Write trait for flexibility and testability
 pub struct Output {
-    stdout: StandardStream,
-    stderr: StandardStream,
+    stdout: OutputStream,
+    stderr: OutputStream,
     quiet: bool,
     json: bool,
 }
@@ -25,11 +25,17 @@ impl Output {
         };
 
         Self {
-            stdout: StandardStream::stdout(color_choice),
-            stderr: StandardStream::stderr(color_choice),
+            stdout: OutputStream::Terminal(StandardStream::stdout(color_choice)),
+            stderr: OutputStream::Terminal(StandardStream::stderr(color_choice)),
             quiet,
             json,
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn redirect_service_log(&mut self, log: crate::service_log::ServiceLog) {
+        self.stdout = OutputStream::Service(log.clone());
+        self.stderr = OutputStream::Service(log);
     }
 
     // ========== Basic Output Methods ==========
@@ -125,11 +131,11 @@ impl Output {
 
     // ========== Internal helpers for submodules ==========
 
-    pub(crate) fn stdout(&mut self) -> &mut StandardStream {
+    pub(crate) fn stdout(&mut self) -> &mut impl WriteColor {
         &mut self.stdout
     }
 
-    pub(crate) fn stderr(&mut self) -> &mut StandardStream {
+    pub(crate) fn stderr(&mut self) -> &mut impl WriteColor {
         &mut self.stderr
     }
 
@@ -143,5 +149,53 @@ impl Output {
 
     pub(crate) fn print_json_internal(&mut self, level: &str, message: &str) -> io::Result<()> {
         self.print_json(level, message)
+    }
+}
+
+// Normal CLI output remains a StandardStream; only native macOS service mode redirects it.
+enum OutputStream {
+    Terminal(StandardStream),
+    #[cfg(target_os = "macos")]
+    Service(crate::service_log::ServiceLog),
+}
+
+impl Write for OutputStream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Terminal(stream) => stream.write(bytes),
+            #[cfg(target_os = "macos")]
+            Self::Service(log) => log.write(bytes),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Terminal(stream) => stream.flush(),
+            #[cfg(target_os = "macos")]
+            Self::Service(log) => log.flush(),
+        }
+    }
+}
+
+impl WriteColor for OutputStream {
+    fn supports_color(&self) -> bool {
+        match self {
+            Self::Terminal(stream) => stream.supports_color(),
+            #[cfg(target_os = "macos")]
+            Self::Service(_) => false,
+        }
+    }
+    fn set_color(&mut self, spec: &ColorSpec) -> io::Result<()> {
+        match self {
+            Self::Terminal(stream) => stream.set_color(spec),
+            #[cfg(target_os = "macos")]
+            Self::Service(_) => Ok(()),
+        }
+    }
+    fn reset(&mut self) -> io::Result<()> {
+        match self {
+            Self::Terminal(stream) => stream.reset(),
+            #[cfg(target_os = "macos")]
+            Self::Service(_) => Ok(()),
+        }
     }
 }

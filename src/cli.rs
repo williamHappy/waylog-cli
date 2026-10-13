@@ -112,6 +112,28 @@ pub enum Commands {
         /// Output archive directory
         #[arg(long)]
         archive_dir: Option<std::path::PathBuf>,
+
+        /// Cooperate with a sync worker by locking this file during each collection cycle
+        #[arg(long)]
+        archive_lock_file: Option<std::path::PathBuf>,
+
+        /// Pause collection while this Git directory has an unfinished operation
+        #[arg(long, requires = "archive_lock_file")]
+        git_dir: Option<std::path::PathBuf>,
+
+        /// Seconds between local archive collection cycles
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        interval_seconds: u64,
+
+        /// Hold a singleton lock for a native macOS background watch
+        #[cfg(target_os = "macos")]
+        #[arg(long)]
+        instance_lock_file: Option<std::path::PathBuf>,
+
+        /// Write rotating background logs without a supervisor process
+        #[cfg(target_os = "macos")]
+        #[arg(long)]
+        service_log_file: Option<std::path::PathBuf>,
     },
 
     /// Publish an archive directory to GitHub using a token
@@ -225,6 +247,10 @@ mod tests {
                 archive_dir,
                 browser,
                 no_browser,
+                archive_lock_file,
+                git_dir,
+                interval_seconds,
+                ..
             } => {
                 assert_eq!(provider.as_deref(), Some("claude"));
                 assert_eq!(
@@ -233,6 +259,9 @@ mod tests {
                 );
                 assert!(browser.is_none());
                 assert!(!no_browser);
+                assert!(archive_lock_file.is_none());
+                assert!(git_dir.is_none());
+                assert_eq!(interval_seconds, 30);
             }
             _ => panic!("expected watch command"),
         }
@@ -283,11 +312,18 @@ mod tests {
                 archive_dir,
                 browser,
                 no_browser,
+                archive_lock_file,
+                git_dir,
+                interval_seconds,
+                ..
             } => {
                 assert_eq!(provider.as_deref(), Some("codex"));
                 assert!(archive_dir.is_none());
                 assert_eq!(browser, Some(Browser::Chrome));
                 assert!(!no_browser);
+                assert!(archive_lock_file.is_none());
+                assert!(git_dir.is_none());
+                assert_eq!(interval_seconds, 30);
             }
             _ => panic!("expected watch command"),
         }
@@ -377,5 +413,58 @@ mod tests {
             }
             _ => panic!("expected watch command"),
         }
+    }
+
+    #[test]
+    fn test_watch_parses_optional_archive_coordinator() {
+        let cli = Cli::parse_from([
+            "waylog",
+            "watch",
+            "--archive-lock-file",
+            "/tmp/service/archive-access.lock",
+            "--git-dir",
+            "/tmp/repo/.git",
+        ]);
+        match cli.command {
+            Commands::Watch {
+                archive_lock_file,
+                git_dir,
+                ..
+            } => {
+                assert_eq!(
+                    archive_lock_file.as_deref(),
+                    Some(std::path::Path::new("/tmp/service/archive-access.lock"))
+                );
+                assert_eq!(
+                    git_dir.as_deref(),
+                    Some(std::path::Path::new("/tmp/repo/.git"))
+                );
+            }
+            _ => panic!("expected watch command"),
+        }
+    }
+
+    #[test]
+    fn test_watch_git_dir_requires_archive_lock_file() {
+        assert!(Cli::try_parse_from(["waylog", "watch", "--git-dir", "/tmp/repo/.git"]).is_err());
+        assert!(Cli::try_parse_from([
+            "waylog",
+            "watch",
+            "--archive-lock-file",
+            "/tmp/archive-access.lock",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn test_watch_collection_interval() {
+        let cli = Cli::parse_from(["waylog", "watch", "--interval-seconds", "45"]);
+        match cli.command {
+            Commands::Watch {
+                interval_seconds, ..
+            } => assert_eq!(interval_seconds, 45),
+            _ => panic!("expected watch command"),
+        }
+        assert!(Cli::try_parse_from(["waylog", "watch", "--interval-seconds", "0"]).is_err());
     }
 }

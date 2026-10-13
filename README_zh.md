@@ -12,6 +12,8 @@ WayLog CLI 是一个轻量级的工具，自动捕捉并存档你的 AI 编程�
 快速上手文档：
 [macOS / Windows 源码版快速使用指南](docs/quickstart-macos-windows.md)
 
+[后台采集服务：安装、升级、重启与检查](docs/waylog-upgrade.md)
+
 ---
 
 ## ✨ 特性
