@@ -45,9 +45,12 @@ function Resolve-Executable([string]$Value) {
     return $application.Source
 }
 $pythonLauncher = Resolve-Executable $pythonSetting
-$python = & $pythonLauncher -c 'import sys; assert sys.version_info >= (3,9), "Python 3.9+ required"; print(sys.executable)'
+$python = & $pythonLauncher -c 'import sys; sys.exit(1) if sys.version_info < (3,9) else print(sys.executable)'
 if ($LASTEXITCODE -ne 0) { throw 'Cannot run Python 3.9+; configure python with a real python.exe path.' }
 $python = [string]($python | Select-Object -Last 1)
+if ([string]::IsNullOrWhiteSpace($python) -or -not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    throw 'Python executable discovery returned an empty or invalid path; configure python with a real python.exe path.'
+}
 $core = Join-Path $PSScriptRoot 'waylog-service.py'
 $coreArgs = @($core, '--config', $ConfigPath)
 $configText = & $python @coreArgs config
