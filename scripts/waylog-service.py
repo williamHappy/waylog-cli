@@ -185,10 +185,11 @@ def load_configuration(path=None, overrides=None):
     return values, str(config_file) if config_file.exists() else None
 
 
-def run(args, cwd=None, timeout=180, check=True, env=None):
+def run(args, cwd=None, timeout=180, check=True, env=None, machine_output=False):
     """Bound the entire process group, including SSH and LFS children."""
     process = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE if machine_output else subprocess.STDOUT,
                                text=True, encoding="utf-8", errors="replace", **process_options())
     previous_handler = signal.getsignal(signal.SIGTERM)
     def interrupted(signum, frame):
@@ -203,7 +204,7 @@ def run(args, cwd=None, timeout=180, check=True, env=None):
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(args, timeout)
             try:
-                output, _ = process.communicate(timeout=min(0.5, remaining))
+                output, diagnostic = process.communicate(timeout=min(0.5, remaining))
                 break
             except subprocess.TimeoutExpired:
                 continue
@@ -221,8 +222,11 @@ def run(args, cwd=None, timeout=180, check=True, env=None):
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
     if check and process.returncode:
-        raise ServiceError(f"Command failed ({process.returncode}): {shlex.join(args)}\n{output.strip()}")
-    return process.returncode, output.strip()
+        details = output + (diagnostic or "")
+        raise ServiceError(f"Command failed ({process.returncode}): {shlex.join(args)}\n{details.strip()}")
+    if machine_output and diagnostic:
+        print(diagnostic.rstrip(), file=sys.stderr)
+    return process.returncode, output if machine_output else output.strip()
 
 
 def stamp():
@@ -297,7 +301,7 @@ class Service:
         if args and args[0] == "push" and self.direct and self._lfs_ready_for_push:
             env = dict(self.env, GIT_LFS_SKIP_PUSH="1")
         return run([self.git_path, "-C", str(self.repo), *options, *args], timeout=self.args.timeout,
-                   check=check, env=env)
+                   check=check, env=env, machine_output="-z" in args)
 
     def network_state(self):
         path = self.state / "network-state.json"
@@ -693,11 +697,15 @@ class Service:
 
     def integrate(self):
         self.git("fetch", "origin", self.args.branch)
-        code, output = self.git("rebase", f"origin/{self.args.branch}", check=False)
+        remote = f"origin/{self.args.branch}"
+        merges = self.git("rev-list", "--min-parents=2", f"{remote}..HEAD")[1]
+        operation = "merge" if self.direct and merges else "rebase"
+        arguments = ("merge", "--no-edit", remote) if operation == "merge" else ("rebase", remote)
+        code, output = self.git(*arguments, check=False)
         if code:
-            self.git("rebase", "--abort", check=False)
-            (self.state / "BLOCKED").write_text(f"{stamp()} Rebase failed; inspect commits and resolve manually.\n{output}\n", encoding="utf-8")
-            raise ServiceError("Rebase failed. Sync is blocked; resolve manually, then use unblock")
+            self.git(operation, "--abort", check=False)
+            (self.state / "BLOCKED").write_text(f"{stamp()} {operation.title()} failed; inspect commits and resolve manually.\n{output}\n", encoding="utf-8")
+            raise ServiceError(f"{operation.title()} failed. Sync is blocked; resolve manually, then use unblock")
 
     def sync(self, dry_run=False):
         if self.direct:
@@ -776,6 +784,19 @@ class Service:
         prefix = self.remote_path.as_posix() + "/"
         for commit in commits:
             parents = self.git("show", "-s", "--format=%P", commit)[1].split()
+            if len(parents) == 2:
+                # Accept only a merge of already-published history that preserves
+                # this device's archive exactly and adds no other local edits.
+                remote = f"origin/{self.args.branch}"
+                ancestor = self.git("merge-base", "--is-ancestor", parents[1], remote, check=False)[0]
+                own_changed = self.git("diff", "--quiet", parents[0], commit, "--",
+                                       self.remote_path.as_posix(), check=False)[0]
+                local_names = [name for name in self.git("diff", "--name-only", "-z",
+                                                        parents[1], commit)[1].split("\0") if name]
+                if ancestor == 0 and own_changed == 0 and all(
+                        name.startswith(prefix) for name in local_names):
+                    continue
+                raise ServiceError("Merge includes unpublished history or additional edits; reconcile it manually first")
             message = self.git("show", "-s", "--format=%B", commit)[1].splitlines()
             names = [name for name in self.git("diff-tree", "--root", "--no-commit-id", "--no-renames",
                                               "--name-only", "-r", "-z", commit)[1].split("\0") if name]
@@ -1250,7 +1271,10 @@ def main():
     elif args.command.endswith("-worker"):
         sys.exit(service.worker(args.command.split("-")[0]))
     elif args.command == "task-spec":
-        print(json.dumps({"executable": sys.executable,
+        executable = Path(sys.executable).with_name("pythonw.exe") if os.name == "nt" else Path(sys.executable)
+        if not executable.is_file():
+            raise ServiceError("pythonw.exe is required beside python.exe for windowless Windows tasks")
+        print(json.dumps({"executable": str(executable),
                           "watch": subprocess.list2cmdline(service.command_arguments("watch-worker")[1:]),
                           "sync": subprocess.list2cmdline(service.command_arguments("sync-worker")[1:])},
                          ensure_ascii=True))

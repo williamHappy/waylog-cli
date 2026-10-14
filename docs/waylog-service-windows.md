@@ -120,6 +120,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\waylog-service
 
 入口创建两个当前用户任务，名称包含 SID：
 
+后台任务使用与 `python.exe` 同目录的 `pythonw.exe`，不会显示黑终端窗口。启动完成后可以关闭手工执行命令的 PowerShell 窗口；日志继续写入 state_dir/logs。锁屏时继续运行，注销后停止，登录后重新启动。升级已有任务需重新注册或更新任务的执行程序，单独替换脚本不会改变已有任务动作。
+
 - watch：运行一个常驻原生 `waylog watch`，每 watch_interval 秒采集本机会话/浏览记录、维护 indexes。监督进程在 Waylog 退出后等待 30 秒再启动本地采集；监督进程自身失败时计划任务最多重启三次，间隔一分钟，不触发上传。
 - sync：默认每小时整点检查，登录和显式 start 时也检查。没有一分钟失败重试；相同任务同时只运行一个。
 

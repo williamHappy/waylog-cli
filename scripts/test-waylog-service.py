@@ -19,6 +19,28 @@ def git(path, *args):
     return subprocess.check_output(["git", "-C", str(path), *args], stderr=subprocess.STDOUT, text=True).strip()
 
 
+class RunnerOutputTests(unittest.TestCase):
+    def test_machine_output_preserves_paths_and_excludes_warnings(self):
+        code = "import sys; sys.stdout.write(' leading name.md\\0next.md\\0'); sys.stderr.write('warning: LF will be replaced by CRLF\\n')"
+        diagnostics = io.StringIO()
+        with contextlib.redirect_stderr(diagnostics):
+            status, output = module.run([module.sys.executable, "-c", code], machine_output=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(output.split("\0"), [" leading name.md", "next.md", ""])
+        self.assertIn("LF will be replaced", diagnostics.getvalue())
+
+    def test_machine_output_failure_retains_error_diagnostics(self):
+        code = "import sys; sys.stderr.write('fatal: missing repository\\n'); sys.exit(128)"
+        with self.assertRaisesRegex(module.ServiceError, "fatal: missing repository"):
+            module.run([module.sys.executable, "-c", code], machine_output=True)
+
+    def test_ordinary_output_keeps_push_rejection_text(self):
+        code = "import sys; sys.stderr.write('remote: error: GH001: Large files detected\\n'); sys.exit(1)"
+        status, output = module.run([module.sys.executable, "-c", code], check=False)
+        self.assertEqual(status, 1)
+        self.assertIn("GH001", output)
+
+
 class SyncTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="waylog-service-test-")
@@ -303,6 +325,47 @@ class DirectSyncTests(unittest.TestCase):
 
     def test_direct_other_machine_rebases(self):
         SyncTests.test_other_machine_directory_rebases(self)
+
+    def prepare_archive_merge(self):
+        git(self.service.repo, "config", "user.name", "Test")
+        git(self.service.repo, "config", "user.email", "test@example.invalid")
+        git(self.service.repo, "add", "ai/raw/wk-me")
+        git(self.service.repo, "commit", "-m", "archive\n\nWaylog-Service-Archive: ai/raw/wk-me")
+        other = self.other / "ai/raw/wk-jzx"
+        other.mkdir(parents=True)
+        (other / "example.md").write_text("Windows archive\n")
+        git(self.other, "add", "ai/raw/wk-jzx")
+        git(self.other, "commit", "-m", "Windows archive")
+        git(self.other, "push")
+        git(self.service.repo, "fetch")
+        git(self.service.repo, "merge", "--no-edit", "origin/main")
+
+    def test_published_other_device_merge_is_accepted(self):
+        self.prepare_archive_merge()
+        self.service.verify_direct_pending()
+
+    def test_sync_preserves_accepted_merge_and_publishes_it(self):
+        self.prepare_archive_merge()
+        merge = git(self.service.repo, "rev-parse", "HEAD")
+        self.service.sync()
+        self.assertEqual(git(self.service.repo, "merge-base", "--is-ancestor", merge, "HEAD"), "")
+        self.assertEqual(git(self.remote, "rev-parse", "main"), git(self.service.repo, "rev-parse", "HEAD"))
+
+    def test_merge_with_added_own_archive_content_is_rejected(self):
+        self.prepare_archive_merge()
+        (self.source / "sessions/session.md").write_text("manual merge edit\n")
+        git(self.service.repo, "add", "ai/raw/wk-me")
+        git(self.service.repo, "commit", "--amend", "--no-edit")
+        with self.assertRaisesRegex(module.ServiceError, "Merge includes"):
+            self.service.verify_direct_pending()
+
+    def test_merge_with_added_other_device_content_is_rejected(self):
+        self.prepare_archive_merge()
+        (self.service.repo / "ai/raw/wk-jzx/example.md").write_text("manual remote edit\n")
+        git(self.service.repo, "add", "ai/raw/wk-jzx")
+        git(self.service.repo, "commit", "--amend", "--no-edit")
+        with self.assertRaisesRegex(module.ServiceError, "Merge includes"):
+            self.service.verify_direct_pending()
 
     def test_direct_conflict_preserves_commit(self):
         SyncTests.test_conflict_blocks_and_preserves_commit(self)
