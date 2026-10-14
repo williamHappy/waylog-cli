@@ -104,7 +104,7 @@ class Service(legacy.Service):
     def archive_version(self):
         files = self.inventory(self.source)
         h = hashlib.sha256()
-        for path, digest in sorted(files.items()):
+        for path, digest in sorted((Path(path).as_posix(), digest) for path, digest in files.items()):
             if not (path.startswith(('sessions/', 'browser-history/')) or path in ('indexes/sessions.jsonl', 'indexes/browser-history.jsonl')):
                 continue
             h.update(path.encode('utf-8') + b'\0' + digest.encode('ascii') + b'\n')

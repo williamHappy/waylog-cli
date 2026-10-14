@@ -323,7 +323,7 @@ class Service:
 
     def save_network_state(self, data):
         self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        data["next_retry_at"] = datetime.datetime.fromtimestamp(data["next_retry_epoch"]).astimezone().isoformat()
+        data["next_retry_at"] = datetime.datetime.fromtimestamp(data["next_retry_epoch"], datetime.timezone.utc).astimezone().isoformat()
         temporary = self.state / "network-state.tmp"
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(self.state / "network-state.json")
