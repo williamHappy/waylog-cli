@@ -88,6 +88,11 @@ class Service(legacy.Service):
     def success_deadline(self, attempt_epoch):
         if self.schedule.mode == 'cron':
             return self.schedule.next_after(time.time())
+        # Native hourly tasks run at Minute=0 on both platforms. Launch/fetch
+        # latency must not make the next successful hourly slot miss its gate.
+        # Longer minimum spacing and all failure reservations remain unchanged.
+        if self.schedule.seconds == 3600 and self.network_spacing == 3600:
+            return (int(time.time()) // 3600 + 1) * 3600
         return super().success_deadline(attempt_epoch) if self.schedule.seconds == self.args.interval else attempt_epoch + self.schedule.seconds
 
     def command_arguments(self, command):

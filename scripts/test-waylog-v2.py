@@ -74,6 +74,16 @@ class ScheduleTests(unittest.TestCase):
 
 
 class ServicePolicyTests(unittest.TestCase):
+    def test_hourly_success_aligns_both_platforms_without_shortening_failure_spacing(self):
+        self.s.schedule = Schedule({'mode': 'interval', 'seconds': 3600})
+        self.s.network_spacing = 3600
+        self.now = epoch('2026-10-14T09:01:30+08:00')
+        for platform in ('darwin', 'win32'):
+            with mock.patch.object(v2.legacy.sys, 'platform', platform):
+                self.assertEqual(self.s.success_deadline(self.now - 20), epoch('2026-10-14T10:00:00+08:00'))
+        self.s.network_spacing = 7200
+        self.assertEqual(self.s.success_deadline(self.now - 20), self.now - 20 + 7200)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
