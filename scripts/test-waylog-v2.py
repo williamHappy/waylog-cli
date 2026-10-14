@@ -79,7 +79,7 @@ class ServicePolicyTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         self.config = root / 'fixture-config.json'
-        self.config.write_text(json.dumps({'git_repo': str(root / 'repo'), 'state_dir': str(root / 'state'),
+        self.config.write_text(json.dumps({'git_repo': str(root / 'repo'), 'state_dir': str(root / 'state'), 'repo_path': 'ai/raw/wk-me',
             'archive_dir': str(root / 'repo/ai/raw/wk-me'),
             'sync_schedule': {'mode': 'cron', 'expression': '*/5 * * * *', 'timezone': 'Asia/Shanghai'}}))
         self.s = v2.Service(v2.load_configuration(self.config))
