@@ -185,10 +185,11 @@ def load_configuration(path=None, overrides=None):
     return values, str(config_file) if config_file.exists() else None
 
 
-def run(args, cwd=None, timeout=180, check=True, env=None):
+def run(args, cwd=None, timeout=180, check=True, env=None, machine_output=False):
     """Bound the entire process group, including SSH and LFS children."""
     process = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE if machine_output else subprocess.STDOUT,
                                text=True, encoding="utf-8", errors="replace", **process_options())
     previous_handler = signal.getsignal(signal.SIGTERM)
     def interrupted(signum, frame):
@@ -203,7 +204,7 @@ def run(args, cwd=None, timeout=180, check=True, env=None):
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(args, timeout)
             try:
-                output, _ = process.communicate(timeout=min(0.5, remaining))
+                output, diagnostic = process.communicate(timeout=min(0.5, remaining))
                 break
             except subprocess.TimeoutExpired:
                 continue
@@ -221,8 +222,11 @@ def run(args, cwd=None, timeout=180, check=True, env=None):
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
     if check and process.returncode:
-        raise ServiceError(f"Command failed ({process.returncode}): {shlex.join(args)}\n{output.strip()}")
-    return process.returncode, output.strip()
+        details = output + (diagnostic or "")
+        raise ServiceError(f"Command failed ({process.returncode}): {shlex.join(args)}\n{details.strip()}")
+    if machine_output and diagnostic:
+        print(diagnostic.rstrip(), file=sys.stderr)
+    return process.returncode, output if machine_output else output.strip()
 
 
 def stamp():
@@ -297,7 +301,7 @@ class Service:
         if args and args[0] == "push" and self.direct and self._lfs_ready_for_push:
             env = dict(self.env, GIT_LFS_SKIP_PUSH="1")
         return run([self.git_path, "-C", str(self.repo), *options, *args], timeout=self.args.timeout,
-                   check=check, env=env)
+                   check=check, env=env, machine_output="-z" in args)
 
     def network_state(self):
         path = self.state / "network-state.json"
@@ -366,23 +370,13 @@ class Service:
             data["consecutive_failures"] = 0
             data["paused"] = False
             data.pop("pause_reason", None)
-            data["next_retry_epoch"] = self.success_deadline(data["last_attempt_epoch"])
+            data["next_retry_epoch"] = data["last_attempt_epoch"] + self.network_spacing
         else:
             data["next_retry_epoch"] = max(data["next_retry_epoch"],
                 time.time() + self.retry_wait(data["consecutive_failures"]))
         self.save_network_state(data)
         self._network_active = False
         self._lfs_ready_for_push = False
-
-    def success_deadline(self, attempt_epoch):
-        # Mac's default scheduler runs at Minute=0. Successful rounds occupy a
-        # calendar hour, so preparation/launch latency cannot skip the next hour.
-        # Failure/interruption cooldowns keep their strict elapsed-time policy.
-        if sys.platform == "darwin" and self.args.interval == 3600 and self.network_spacing == 3600:
-            hour = datetime.datetime.fromtimestamp(attempt_epoch).astimezone().replace(
-                minute=0, second=0, microsecond=0)
-            return hour.timestamp() + 3600
-        return attempt_epoch + self.network_spacing
 
     def retry_wait(self, failures):
         return max(self.network_spacing, self.retry_delays[min(max(0, failures - 1), len(self.retry_delays) - 1)])
@@ -1250,7 +1244,10 @@ def main():
     elif args.command.endswith("-worker"):
         sys.exit(service.worker(args.command.split("-")[0]))
     elif args.command == "task-spec":
-        print(json.dumps({"executable": sys.executable,
+        executable = Path(sys.executable).with_name("pythonw.exe") if os.name == "nt" else Path(sys.executable)
+        if not executable.is_file():
+            raise ServiceError("pythonw.exe is required for windowless tasks")
+        print(json.dumps({"executable": str(executable),
                           "watch": subprocess.list2cmdline(service.command_arguments("watch-worker")[1:]),
                           "sync": subprocess.list2cmdline(service.command_arguments("sync-worker")[1:])},
                          ensure_ascii=True))
