@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Waylog device coverage v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "deviceId",
+    "timezone",
+    "retention",
+    "sources",
+    "days"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timezone": {
+      "const": "Asia/Shanghai"
+    },
+    "retention": {
+      "const": "(previous-calendar-year-anniversary,today];Feb29-clamps-to-Feb28"
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "days": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/day"
+      }
+    },
+    "asOfDate": {
+      "type": "string",
+      "format": "date"
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "enabled",
+        "discovery"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "session",
+            "browser"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "discovery": {
+          "type": "string"
+        }
+      }
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "endExclusive"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "endExclusive": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "attemptedRanges",
+        "successfulRanges",
+        "recordCount",
+        "countUnit",
+        "archiveStatus",
+        "reasonCode",
+        "evidenceScope"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "records",
+            "zero",
+            "partial",
+            "pending",
+            "unknown",
+            "failed",
+            "disabled",
+            "stopped"
+          ]
+        },
+        "attemptedRanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
+        "successfulRanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
+        "recordCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "countUnit": {
+          "enum": [
+            "messages",
+            "visits"
+          ]
+        },
+        "archiveStatus": {
+          "enum": [
+            "success",
+            "failed",
+            "unknown"
+          ]
+        },
+        "reasonCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidenceScope": {
+          "type": "string"
+        },
+        "lastSuccessfulRanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
+        "lastFailureReason": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "records",
+                  "zero"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "recordCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "successfulRanges": {
+                "minItems": 1
+              },
+              "attemptedRanges": {
+                "minItems": 1
+              },
+              "archiveStatus": {
+                "const": "success"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "zero"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "recordCount": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "records"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "recordCount": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "day": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataVersion",
+        "sources"
+      ],
+      "properties": {
+        "dataVersion": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/observation"
+          }
+        }
+      }
+    }
+  }
+}

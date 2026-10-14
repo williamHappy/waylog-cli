@@ -19,6 +19,9 @@ pub struct WatchCoordination {
     pub archive_lock_file: Option<PathBuf>,
     pub git_dir: Option<PathBuf>,
     pub interval_seconds: u64,
+    pub coverage: bool,
+    pub coverage_device: Option<String>,
+    pub sources: Option<Vec<String>>,
     #[cfg(target_os = "macos")]
     pub instance_lock_file: Option<PathBuf>,
 }
@@ -35,6 +38,9 @@ pub async fn handle_watch(
         archive_lock_file,
         git_dir,
         interval_seconds,
+        coverage,
+        coverage_device,
+        sources,
         #[cfg(target_os = "macos")]
         instance_lock_file,
     } = coordination;
@@ -61,7 +67,55 @@ pub async fn handle_watch(
         }
     }
 
+    if let Some(selected) = &sources {
+        if selected.is_empty()
+            || selected.iter().any(|s| {
+                !["codex", "claude", "gemini", "chrome", "atlas", "none"].contains(&s.as_str())
+            })
+            || (selected.contains(&"none".to_string()) && selected.len() != 1)
+        {
+            return Err(WaylogError::Internal(
+                "Invalid collection source selection".into(),
+            ));
+        }
+    }
+    let no_browser = no_browser
+        || sources
+            .as_ref()
+            .map(|s| !s.iter().any(|v| v == "chrome" || v == "atlas"))
+            .unwrap_or(false);
+    let browser = if let Some(selected) = &sources {
+        match (
+            selected.contains(&"chrome".to_string()),
+            selected.contains(&"atlas".to_string()),
+        ) {
+            (true, false) => Some(Browser::Chrome),
+            (false, true) => Some(Browser::Atlas),
+            _ => None,
+        }
+    } else {
+        browser
+    };
     let archive_dir = archive_dir.unwrap_or(path::get_default_archive_dir()?);
+    let device = coverage_device.unwrap_or_else(|| {
+        archive_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    });
+    if coverage
+        && (archive_lock_file.is_none()
+            || device.is_empty()
+            || archive_lock_file
+                .as_ref()
+                .map(|p| p.starts_with(&archive_dir))
+                .unwrap_or(false))
+    {
+        return Err(WaylogError::Internal(
+            "Coverage requires archive lock and device identity".into(),
+        ));
+    }
     let writer = ArchiveWriter::new(archive_dir.clone());
     let browser_writer = BrowserArchiveWriter::new(archive_dir.clone());
 
@@ -72,13 +126,20 @@ pub async fn handle_watch(
     ))?;
     output.info("Press Ctrl+C to stop watching.")?;
 
-    let watched_providers = if let Some(name) = provider_name {
+    let watched_providers = if let Some(selected) = &sources {
+        providers::all_providers()
+            .into_iter()
+            .filter(|p| selected.iter().any(|s| s == p.name()))
+            .collect()
+    } else if let Some(name) = provider_name {
         vec![providers::get_provider(&name)?]
     } else {
         providers::all_providers()
     };
 
     let mut interval = time::interval(Duration::from_secs(interval_seconds));
+    // A slow archive scan must not cause immediate catch-up collection loops.
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     // Register SIGTERM before the first collection cycle. launchd uses it on stop.
     #[cfg(target_os = "macos")]
@@ -106,6 +167,11 @@ pub async fn handle_watch(
                     continue;
                 };
                 path::ensure_dir_exists(&archive_dir)?;
+                let cycle_now = chrono::Utc::now();
+                let today = cycle_now.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).date_naive();
+                let targets = [today.pred_opt().unwrap(), today];
+                let mut roster = std::collections::BTreeMap::new();
+                let mut observations: std::collections::BTreeMap<String, std::collections::BTreeMap<String, crate::archive::coverage::Observation>> = targets.iter().map(|d| (d.to_string(), std::collections::BTreeMap::new())).collect();
                 let mut written = 0usize;
                 let mut unchanged = 0usize;
                 let mut filtered = 0usize;
@@ -113,15 +179,30 @@ pub async fn handle_watch(
                 let mut browser_unchanged = 0usize;
 
                 for provider in &watched_providers {
-                    if !provider.has_local_data() {
-                        continue;
+                    let id = format!("session:{}", provider.name());
+                    let found = provider.has_local_data();
+                    roster.insert(id.clone(), crate::archive::coverage::Source { kind: "session".into(), enabled: true,
+                        discovery: if found { "found" } else { "unavailable" }.into() });
+                    for day in observations.values_mut() {
+                        day.insert(id.clone(), crate::archive::coverage::Observation::pending("unknown", "source-not-discovered", "messages"));
                     }
-
-                    let session_paths = provider.get_all_host_sessions().await?;
+                    if !found { continue; }
+                    let session_paths = match provider.get_all_host_sessions().await {
+                        Ok(paths) => paths,
+                        Err(error) => {
+                            if !coverage { return Err(error); }
+                            for day in observations.values_mut() { day.insert(id.clone(), crate::archive::coverage::Observation::pending("failed", "source-enumeration-failed", "messages")); }
+                            continue;
+                        }
+                    };
+                    let mut counts = std::collections::BTreeMap::new();
+                    let mut read_failed = false;
+                    let mut archive_failed = false;
                     for session_path in session_paths {
                         let session = match provider.parse_session(&session_path).await {
                             Ok(session) => session,
                             Err(error) => {
+                                read_failed = true;
                                 tracing::warn!(
                                     "Skipping unreadable {} session {}: {}",
                                     provider.name(),
@@ -141,6 +222,7 @@ pub async fn handle_watch(
                         {
                             Ok(result) => result,
                             Err(error) => {
+                                archive_failed = true;
                                 tracing::warn!(
                                     "Skipping failed archive export for {} session {}: {}",
                                     provider.name(),
@@ -150,6 +232,12 @@ pub async fn handle_watch(
                                 continue;
                             }
                         };
+                        if result.filtered_reason.is_none() {
+                            for message in &session.messages {
+                                let date = message.timestamp.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).date_naive();
+                                *counts.entry(date).or_insert(0u64) += 1;
+                            }
+                        }
                         if let Some(reason) = result.filtered_reason {
                             tracing::info!(
                                 "Filtered {} session {} from archive watch sync: {}",
@@ -164,18 +252,90 @@ pub async fn handle_watch(
                             unchanged += 1;
                         }
                     }
+                    for date in targets {
+                        let mut observation = crate::archive::coverage::Observation::pending(
+                            if read_failed || archive_failed { "failed" } else { "partial" },
+                            if read_failed { "session-read-failed" } else if archive_failed { "archive-write-failed" } else { "enumerator-does-not-prove-full-day" }, "messages");
+                        if date < today { observation.attempted_ranges = vec![crate::archive::coverage::day_range(date)]; }
+                        observation.record_count = if read_failed { None } else { Some(*counts.get(&date).unwrap_or(&0)) };
+                        observation.archive_status = if archive_failed { "failed" } else if read_failed { "unknown" } else { "success" }.into();
+                        observations.get_mut(&date.to_string()).unwrap().insert(id.clone(), observation);
+                    }
+                }
+                for name in providers::list_providers() {
+                    let id = format!("session:{name}");
+                    if !roster.contains_key(&id) {
+                        roster.insert(id.clone(), crate::archive::coverage::Source { kind: "session".into(), enabled: false, discovery: "not-selected".into() });
+                        for day in observations.values_mut() { day.insert(id.clone(), crate::archive::coverage::Observation::pending("disabled", "provider-not-selected", "messages")); }
+                    }
                 }
 
                 if browser_enabled(browser.as_ref(), no_browser) {
                     let collector = ChromiumHistoryCollector::new(browser.as_ref())?;
-                    let existing_entries = read_browser_index_entries(&archive_dir).await?;
+                    let existing_result = read_browser_index_entries(&archive_dir).await;
+                    let browser_index_failed = existing_result.is_err();
+                    let existing_entries = match existing_result {
+                        Ok(value) => value,
+                        Err(error) => { if !coverage { return Err(error); } std::collections::BTreeMap::new() }
+                    };
                     let since_by_profile =
                         latest_browser_visit_per_source_profile(&existing_entries);
-                    let collected = collector.collect_visits_since(&since_by_profile).await?;
+                    let collected = collector.collect_visits_since(&since_by_profile).await;
+                    if let Err(error) = &collected {
+                        if !coverage { return Err(WaylogError::Internal(error.to_string())); }
+                    }
+                    let mut collected = match collected {
+                        Ok(value) => value,
+                        Err(_) => crate::browser::chrome::BrowserCollectionResult { visits: vec![], warnings: vec!["coverage-browser-read-failed".into()], source_reads: vec![] },
+                    };
+                    if browser_index_failed { collected.warnings.push("archive-index-read-failed".into()); }
                     for warning in &collected.warnings {
                         output.warn(warning)?;
                     }
-                    let summary = browser_writer.export_visits(&collected.visits, false).await?;
+                    let summary_result = browser_writer.export_visits(&collected.visits, false).await;
+                    for name in ["chrome", "atlas"] {
+                        let id = format!("browser:{name}");
+                        let selected = browser.as_ref().map(|b| format!("{b:?}").to_lowercase() == name).unwrap_or(true);
+                        roster.insert(id.clone(), crate::archive::coverage::Source { kind: "browser".into(), enabled: selected, discovery: "incremental-discovery-only".into() });
+                        for date in targets {
+                            let mut observation = crate::archive::coverage::Observation::pending(
+                                if !selected { "disabled" } else if summary_result.is_err() || !collected.warnings.is_empty() { "failed" } else { "pending" },
+                                if !selected { "browser-not-selected" } else if summary_result.is_err() { "archive-write-failed" } else if !collected.warnings.is_empty() { "browser-read-warning" } else { "incremental-read-is-not-full-day" }, "visits");
+                            if selected { if date < today { observation.attempted_ranges = vec![crate::archive::coverage::day_range(date)]; } }
+                            observation.archive_status = if summary_result.is_err() { "failed" } else { "unknown" }.into();
+                            observations.get_mut(&date.to_string()).unwrap().insert(id.clone(), observation);
+                        }
+                    }
+                    let indexed = match read_browser_index_entries(&archive_dir).await {
+                        Ok(value) => value,
+                        Err(error) => { if !coverage { return Err(error); } std::collections::BTreeMap::new() }
+                    };
+                    for source in &collected.source_reads {
+                        roster.insert(source.id.clone(), crate::archive::coverage::Source { kind: "browser".into(), enabled: true, discovery: if source.status == "unknown" { "unavailable" } else { "found" }.into() });
+                        for date in targets {
+                            let full = crate::archive::coverage::day_range(date);
+                            let lower = chrono::DateTime::parse_from_rfc3339(&full.start).unwrap().with_timezone(&chrono::Utc);
+                            let upper = chrono::DateTime::parse_from_rfc3339(&full.end_exclusive).unwrap().with_timezone(&chrono::Utc);
+                            let start = source.since.map(|s| s.max(lower)).unwrap_or(lower);
+                            let end = cycle_now.min(upper);
+                            let attempted = source.id.matches(':').count() == 2 && start < end;
+                            let mut observation = crate::archive::coverage::Observation::pending(
+                                if source.status == "failed" || summary_result.is_err() { "failed" } else if attempted { "partial" } else { "unknown" },
+                                if source.status == "failed" { "browser-read-failed" } else if summary_result.is_err() { "archive-write-failed" } else { "incremental-retained-history-only" }, "visits");
+                            if attempted && date < today {
+                                let range = crate::archive::coverage::Range { start: start.to_rfc3339(), end_exclusive: end.to_rfc3339() };
+                                observation.attempted_ranges = vec![range.clone()];
+                                if source.status == "success" && summary_result.is_ok() { observation.successful_ranges = vec![range]; }
+                            }
+                            let count: usize = indexed.values().filter(|e| format!("browser:{}:{}", e.browser, e.profile) == source.id && e.date == date.to_string()).map(|e| e.record_count).sum();
+                            if source.status == "success" && summary_result.is_ok() { observation.record_count = Some(count as u64); observation.archive_status = "success".into(); }
+                            observations.get_mut(&date.to_string()).unwrap().insert(source.id.clone(), observation);
+                        }
+                    }
+                    let summary = match summary_result {
+                        Ok(summary) => summary,
+                        Err(error) => { if !coverage { return Err(error); } crate::archive::browser::BrowserArchiveSummary::default() }
+                    };
                     for warning in &summary.warnings {
                         output.warn(warning)?;
                     }
@@ -183,6 +343,43 @@ pub async fn handle_watch(
                     browser_unchanged = summary.unchanged_groups;
                 }
 
+                if coverage {
+                    for name in ["chrome", "atlas"] {
+                        let id = format!("browser:{name}");
+                        if !roster.contains_key(&id) {
+                            roster.insert(id.clone(), crate::archive::coverage::Source { kind: "browser".into(), enabled: false, discovery: "disabled-by-config".into() });
+                            for day in observations.values_mut() { day.insert(id.clone(), crate::archive::coverage::Observation::pending("disabled", "browser-disabled", "visits")); }
+                        }
+                    }
+                    let version = match crate::archive::coverage::data_version(&archive_dir).await {
+                        Ok(version) => Some(version),
+                        Err(_) => {
+                            for day in observations.values_mut() {
+                                for observation in day.values_mut() {
+                                    if observation.status != "disabled" {
+                                        observation.status = "failed".into();
+                                        observation.reason_code = Some("archive-digest-failed".into());
+                                        observation.archive_status = "failed".into();
+                                        observation.record_count = None;
+                                        observation.successful_ranges.clear();
+                                    }
+                                }
+                            }
+                            None
+                        }
+                    };
+                    let mut receipt = crate::archive::coverage::read(&archive_dir, &device).await?;
+                    for (id, source) in receipt.sources.clone() {
+                        if !roster.contains_key(&id) {
+                            roster.insert(id.clone(), crate::archive::coverage::Source { kind: source.kind.clone(), enabled: source.enabled, discovery: "not-rediscovered".into() });
+                            for day in observations.values_mut() { day.insert(id.clone(), crate::archive::coverage::Observation::pending(if source.enabled { "unknown" } else { "disabled" }, "source-not-rediscovered", if source.kind == "browser" { "visits" } else { "messages" })); }
+                        }
+                    }
+                    let days = observations.into_iter().map(|(date, sources)| (date, crate::archive::coverage::Day { data_version: version.clone(), sources })).collect();
+                    receipt.merge(&device, today, roster, days)?;
+                    crate::archive::coverage::save_locked(&archive_dir, &receipt).await?;
+                    crate::archive::coverage::save_runtime(archive_lock_file.as_deref().unwrap(), &device, "running", &cycle_now.to_rfc3339()).await?;
+                }
                 if written > 0 || filtered > 0 || browser_updated > 0 {
                     output.info(format!(
                         "Watch sync complete: {} updated, {} unchanged, {} filtered, {} browser groups updated, {} browser groups unchanged",
@@ -191,6 +388,14 @@ pub async fn handle_watch(
                 }
             }
             _ = &mut stop => {
+                if coverage {
+                    let now = chrono::Utc::now();
+                    crate::archive::coverage::save_runtime(archive_lock_file.as_deref().unwrap(), &device, "stopped", &now.to_rfc3339()).await?;
+                    if let Some(_guard) = try_begin_watch_cycle(archive_lock_file.as_deref(), git_dir.as_deref())? {
+                        let today = now.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).date_naive();
+                        crate::archive::coverage::mark_stopped_locked(&archive_dir, &device, today).await?;
+                    }
+                }
                 output.info("Stopped watching local session data.")?;
                 break;
             }

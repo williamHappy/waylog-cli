@@ -1,0 +1,25 @@
+{
+  "git_repo": "./fictional-repo",
+  "repo_path": "ai/raw/wk-me",
+  "state_dir": "./fictional-state",
+  "repo_mode": "full",
+  "pull_on_idle": true,
+  "coverage_enabled": true,
+  "collection_sources": [
+    "codex",
+    "claude",
+    "chrome"
+  ],
+  "watch_interval": 30,
+  "sync_schedule": {
+    "mode": "cron",
+    "expression": "0 9,12,18 * * 1-5",
+    "timezone": "Asia/Shanghai"
+  },
+  "retry_max_failures": 3,
+  "retry_delays": [
+    3600,
+    7200
+  ],
+  "minimum_network_interval": 3600
+}

@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "deviceId": "wk-me",
+  "timezone": "Asia/Shanghai",
+  "retention": "(previous-calendar-year-anniversary,today];Feb29-clamps-to-Feb28",
+  "sources": {
+    "session:codex": {
+      "kind": "session",
+      "enabled": true,
+      "discovery": "found"
+    },
+    "session:claude": {
+      "kind": "session",
+      "enabled": false,
+      "discovery": "not-selected"
+    },
+    "browser:chrome": {
+      "kind": "browser",
+      "enabled": true,
+      "discovery": "found"
+    },
+    "browser:chrome:Default": {
+      "kind": "browser",
+      "enabled": true,
+      "discovery": "found"
+    }
+  },
+  "days": {
+    "2026-10-12": {
+      "dataVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sources": {
+        "session:codex": {
+          "status": "records",
+          "attemptedRanges": [
+            {
+              "start": "2026-10-12T00:00:00+08:00",
+              "endExclusive": "2026-10-13T00:00:00+08:00"
+            }
+          ],
+          "successfulRanges": [
+            {
+              "start": "2026-10-12T00:00:00+08:00",
+              "endExclusive": "2026-10-13T00:00:00+08:00"
+            }
+          ],
+          "recordCount": 3,
+          "countUnit": "messages",
+          "archiveStatus": "success",
+          "reasonCode": null,
+          "evidenceScope": "synthetic-complete-retained-snapshot"
+        },
+        "session:claude": {
+          "status": "disabled",
+          "attemptedRanges": [],
+          "successfulRanges": [],
+          "recordCount": null,
+          "countUnit": "messages",
+          "archiveStatus": "unknown",
+          "reasonCode": "provider-not-selected",
+          "evidenceScope": "retained-local-source-snapshot"
+        }
+      }
+    },
+    "2026-10-13": {
+      "dataVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sources": {
+        "session:codex": {
+          "status": "zero",
+          "attemptedRanges": [
+            {
+              "start": "2026-10-13T00:00:00+08:00",
+              "endExclusive": "2026-10-14T00:00:00+08:00"
+            }
+          ],
+          "successfulRanges": [
+            {
+              "start": "2026-10-13T00:00:00+08:00",
+              "endExclusive": "2026-10-14T00:00:00+08:00"
+            }
+          ],
+          "recordCount": 0,
+          "countUnit": "messages",
+          "archiveStatus": "success",
+          "reasonCode": null,
+          "evidenceScope": "synthetic-complete-retained-snapshot"
+        },
+        "browser:chrome:Default": {
+          "status": "failed",
+          "attemptedRanges": [],
+          "successfulRanges": [],
+          "recordCount": null,
+          "countUnit": "visits",
+          "archiveStatus": "failed",
+          "reasonCode": "browser-read-failed",
+          "evidenceScope": "retained-local-source-snapshot"
+        }
+      }
+    },
+    "2026-10-14": {
+      "dataVersion": null,
+      "sources": {
+        "session:codex": {
+          "status": "stopped",
+          "attemptedRanges": [],
+          "successfulRanges": [],
+          "recordCount": null,
+          "countUnit": "messages",
+          "archiveStatus": "unknown",
+          "reasonCode": "explicit-stop",
+          "evidenceScope": "retained-local-source-snapshot"
+        },
+        "browser:chrome:Default": {
+          "status": "unknown",
+          "attemptedRanges": [],
+          "successfulRanges": [],
+          "recordCount": null,
+          "countUnit": "visits",
+          "archiveStatus": "unknown",
+          "reasonCode": "no-current-read-proof",
+          "evidenceScope": "retained-local-source-snapshot"
+        }
+      }
+    }
+  },
+  "asOfDate": "2026-10-14"
+}

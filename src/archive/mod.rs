@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod coverage;
 pub mod layout;
 pub mod meta;
 

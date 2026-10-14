@@ -125,6 +125,18 @@ pub enum Commands {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         interval_seconds: u64,
 
+        /// Explicit collection sources: codex,claude,gemini,chrome,atlas (or none)
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["provider", "browser"])]
+        sources: Option<Vec<String>>,
+
+        /// Opt in to device-level coverage receipts (requires the archive lock)
+        #[arg(long, requires = "archive_lock_file")]
+        coverage: bool,
+
+        /// Device ID stored in coverage.json; defaults to archive directory name
+        #[arg(long, requires = "coverage")]
+        coverage_device: Option<String>,
+
         /// Hold a singleton lock for a native macOS background watch
         #[cfg(target_os = "macos")]
         #[arg(long)]

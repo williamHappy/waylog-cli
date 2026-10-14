@@ -1,0 +1,12 @@
+{
+  "result": "failed",
+  "current_data_version": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pending_data_version": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "last_uploaded_data_version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "last_uploaded_commit": "fictional-commit-A",
+  "last_uploaded_archive_tree": "fictional-tree-A",
+  "upload_attempt_data_version": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "upload_result": "unknown",
+  "last_error": "fictional transport timeout",
+  "schedule_slot": 1791939600
+}

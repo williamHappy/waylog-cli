@@ -132,6 +132,9 @@ async fn main() {
                 archive_lock_file,
                 git_dir,
                 interval_seconds,
+                coverage,
+                coverage_device,
+                sources,
                 #[cfg(target_os = "macos")]
                 instance_lock_file,
                 ..
@@ -145,6 +148,9 @@ async fn main() {
                         archive_lock_file,
                         git_dir,
                         interval_seconds,
+                        coverage,
+                        coverage_device,
+                        sources,
                         #[cfg(target_os = "macos")]
                         instance_lock_file,
                     },

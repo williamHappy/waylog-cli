@@ -27,9 +27,17 @@ pub struct ChromiumHistoryCollector {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserSourceRead {
+    pub id: String,
+    pub status: String,
+    pub since: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserCollectionResult {
     pub visits: Vec<BrowserVisitRecord>,
     pub warnings: Vec<String>,
+    pub source_reads: Vec<BrowserSourceRead>,
 }
 
 impl ChromiumHistoryCollector {
@@ -69,6 +77,7 @@ impl ChromiumHistoryCollector {
     ) -> Result<BrowserCollectionResult> {
         let mut visits = Vec::new();
         let mut warnings = Vec::new();
+        let mut source_reads = Vec::new();
 
         for source in &self.sources {
             let profiles = match discover_profiles_in_root(source) {
@@ -82,10 +91,25 @@ impl ChromiumHistoryCollector {
                     );
                     tracing::warn!("{message}");
                     warnings.push(message);
+                    source_reads.push(BrowserSourceRead {
+                        id: format!("browser:{}", source.browser),
+                        status: "failed".into(),
+                        since: None,
+                    });
                     continue;
                 }
             };
 
+            source_reads.push(BrowserSourceRead {
+                id: format!("browser:{}", source.browser),
+                status: if profiles.is_empty() {
+                    "unknown"
+                } else {
+                    "found"
+                }
+                .into(),
+                since: None,
+            });
             for profile in profiles {
                 let since = since_by_source_profile
                     .get(&source_profile_key(&profile.browser, &profile.profile))
@@ -99,6 +123,16 @@ impl ChromiumHistoryCollector {
                 .await
                 .map_err(|error| WaylogError::Internal(error.to_string()))?;
 
+                source_reads.push(BrowserSourceRead {
+                    id: format!("browser:{}:{}", profile.browser, profile.profile),
+                    status: if profile_visits.is_ok() {
+                        "success"
+                    } else {
+                        "failed"
+                    }
+                    .into(),
+                    since,
+                });
                 match profile_visits {
                     Ok(profile_visits) => visits.extend(profile_visits),
                     Err(error) => {
@@ -122,7 +156,11 @@ impl ChromiumHistoryCollector {
                 .then_with(|| left.browser.cmp(&right.browser))
                 .then_with(|| left.profile.cmp(&right.profile))
         });
-        Ok(BrowserCollectionResult { visits, warnings })
+        Ok(BrowserCollectionResult {
+            visits,
+            warnings,
+            source_reads,
+        })
     }
 }
 
@@ -525,6 +563,11 @@ mod tests {
         assert_eq!(result.visits[0].profile, "Default");
         assert_eq!(result.visits[0].browser, "atlas");
         assert_eq!(result.warnings.len(), 1);
+        assert!(result.source_reads.iter().any(|r| r.status == "failed"));
+        assert!(result
+            .source_reads
+            .iter()
+            .any(|r| r.id == "browser:atlas:Default" && r.status == "success"));
     }
 
     #[cfg(target_os = "windows")]

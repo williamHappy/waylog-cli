@@ -1,0 +1,10 @@
+{
+  "git_repo": "./fictional-repo",
+  "repo_path": "ai/raw/wk-jzx",
+  "state_dir": "./fictional-state",
+  "repo_mode": "sparse",
+  "pull_on_idle": false,
+  "interval": 3600,
+  "watch_interval": 30,
+  "coverage_enabled": true
+}
