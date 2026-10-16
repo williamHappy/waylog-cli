@@ -6,10 +6,7 @@
   "required": [
     "schemaVersion",
     "deviceId",
-    "timezone",
-    "retention",
-    "sources",
-    "days"
+    "timezone"
   ],
   "properties": {
     "schemaVersion": {
@@ -43,6 +40,18 @@
     "asOfDate": {
       "type": "string",
       "format": "date"
+    },
+    "collectionEnabled": {
+      "type": "boolean"
+    },
+    "dailyChecks": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/dailyCheck"
+      }
     }
   },
   "$defs": {
@@ -252,6 +261,59 @@
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/observation"
+          }
+        }
+      }
+    },
+    "dailySourceCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "ok",
+            "failed"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "collection",
+            "read",
+            "parse",
+            "archive"
+          ]
+        },
+        "reasonCode": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,96}$"
+        }
+      }
+    },
+    "dailyCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkedAt",
+        "result"
+      ],
+      "properties": {
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "result": {
+          "enum": [
+            "ok",
+            "failed"
+          ]
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/dailySourceCheck"
           }
         }
       }

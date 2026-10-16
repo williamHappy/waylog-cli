@@ -215,6 +215,24 @@ class ServicePolicyTests(unittest.TestCase):
         self.assertIn('fictional dispatched', (self.s.state / 'logs/sync-worker.log').read_text())
 
 
+    def test_windowless_worker_captures_optional_warning_without_recursion(self):
+        import logging
+        from types import SimpleNamespace
+        root = logging.getLogger()
+        handlers = root.handlers[:]
+        def warn():
+            # Exercise default logging configuration inside redirected stderr.
+            root.handlers.clear()
+            logging.warning('fictional optional status skipped')
+        try:
+            with mock.patch.object(v2, 'os', SimpleNamespace(name='nt')), mock.patch.object(v2.legacy, 'windows_job', return_value=object()), mock.patch.object(self.s, 'dispatch', side_effect=warn):
+                self.assertEqual(self.s.worker('dispatch'), 0)
+        finally:
+            root.handlers[:] = handlers
+            v2.legacy.CANCELLED.clear()
+        log = (self.s.state / 'logs/sync-worker.log').read_text()
+        self.assertEqual(log.count('fictional optional status skipped'), 1)
+
     def test_unknown_upload_resolved_by_fetched_commit_does_not_acknowledge_new_data(self):
         a = 'sha256:' + 'a' * 64
         self.s.record(upload_result='unknown', upload_attempt_commit='fictional-A', upload_attempt_data_version=a,

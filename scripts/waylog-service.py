@@ -16,6 +16,7 @@ import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import plistlib
+import random
 import shlex
 import shutil
 import signal
@@ -284,23 +285,42 @@ class Service:
             + " -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes")
         self.env["GIT_EDITOR"] = "true"
         self.env["GIT_SEQUENCE_EDITOR"] = "true"
+        self.env["LC_ALL"] = "C"
         self._network_active = False
         self._lfs_ready_for_push = False
 
     def git(self, *args, check=True):
-        options = ["-c", "rebase.autoStash=false", "-c", "lfs.transfer.maxretries=1",
+        timeout = self.args.timeout
+        if getattr(self, '_push_deadline', None) is not None:
+            remaining = self._push_deadline - time.monotonic()
+            if remaining <= 0:
+                raise ServiceError("Push reconciliation time budget exhausted; local commits retained")
+            timeout = min(timeout, remaining)
+        options = ["-c", "rebase.autoStash=false", "-c", "merge.autoStash=false",
+                   "-c", "lfs.transfer.maxretries=1",
                    "-c", "lfs.ssh.retries=1", "-c", "lfs.transfer.maxverifies=1"]
         if not self.direct:
             options += ["-c", f"core.hooksPath={(self.repo / '.git/hooks').as_posix()}", "-c", "commit.gpgsign=false"]
         elif args and args[0] in ("fetch", "push", "lfs", "rebase"):
-            # Use SSH for this command without changing the user's saved origin URL or pushurl.
+            # remote.*.url is multi-valued: -c adds a URL, and fetch still uses
+            # the first saved URL. Rewrite saved URLs for this process instead.
+            _, saved_urls = run([self.git_path, "-C", str(self.repo), "config", "--get-all",
+                                 "remote.origin.url"], timeout=timeout,
+                                check=False, env=self.env)
+            for saved_url in saved_urls.splitlines():
+                if saved_url and saved_url != self.args.remote:
+                    options += ["-c", f"url.{self.args.remote}.insteadOf={saved_url}"]
             options += ["-c", f"remote.origin.url={self.args.remote}", "-c", f"remote.origin.pushurl={self.args.remote}"]
         if args and args[0] in ("fetch", "push", "lfs") and not (args[0] == "lfs" and args[1:] == ("version",)):
             self.begin_network()
         env = self.env
         if args and args[0] == "push" and self.direct and self._lfs_ready_for_push:
             env = dict(self.env, GIT_LFS_SKIP_PUSH="1")
-        return run([self.git_path, "-C", str(self.repo), *options, *args], timeout=self.args.timeout,
+        if getattr(self, '_push_deadline', None) is not None:
+            timeout = min(timeout, self._push_deadline - time.monotonic())
+            if timeout <= 0:
+                raise ServiceError("Push reconciliation time budget exhausted; local commits retained")
+        return run([self.git_path, "-C", str(self.repo), *options, *args], timeout=timeout,
                    check=check, env=env, machine_output="-z" in args)
 
     def network_state(self):
@@ -393,13 +413,67 @@ class Service:
 
     def check_push_rejection(self, output):
         # Repair only the script-owned unpublished history; never immediately retransmit.
-        if "GH001" in output and "large files detected" in output.lower():
+        if self.push_failure_kind(output) == "large-file":
             data = self.network_state()
             data["paused"] = True
             data["pause_reason"] = "GitHub GH001 rejected large files; migrate/fix unpublished history before resuming"
             self.save_network_state(data)
             if self.direct:
                 self.recover_large_files(output)
+
+    @staticmethod
+    def push_failure_kind(output):
+        # GitHub includes GH001 in warnings too. Only error diagnostics prove
+        # rejection by the size hook; accompanying warnings never take priority.
+        if re.search(r"(?im)^remote:\s*error:\s*GH001:.*large files detected", output):
+            return "large-file"
+        for line in output.splitlines():
+            if (line.startswith("!\t") or "[rejected]" in line or "[remote rejected]" in line):
+                if ("(fetch first)" in line or "(non-fast-forward)" in line
+                        or re.search(r"cannot lock ref 'refs/heads/[^']+': is at [0-9a-f]+ but expected [0-9a-f]+", line)):
+                    return "remote-advanced"
+        return "other"
+
+    def push_with_retry(self, reconcile=None, revision=None):
+        """One reserved network round, at most three ordinary push attempts.
+
+        Reconciliation may change commit identity, but never force pushes. The
+        frozen-report transport supplies its own durable merge-only callback.
+        """
+        self._push_deadline = time.monotonic() + self.args.timeout
+        try:
+            for attempt in range(1, 4):
+                commit = revision() if revision else self.git("rev-parse", "HEAD")[1]
+                if self.direct:
+                    self.git("lfs", "push", "origin", commit)
+                    self._lfs_ready_for_push = True
+                code, output = self.git("push", "--porcelain", "origin",
+                                        f"{commit}:refs/heads/{self.args.branch}", check=False)
+                warnings = [line for line in output.splitlines() if line.startswith("remote: warning:")]
+                kind = self.push_failure_kind(output) if code else None
+                self.record(push_attempts=attempt, push_failure_kind=kind, push_warnings=warnings)
+                if not code:
+                    return commit
+                if kind != "remote-advanced":
+                    self.check_push_rejection(output)
+                    raise ServiceError(f"Push failed; local commits retained.\n{output}")
+                if attempt == 3:
+                    raise ServiceError(f"Remote advanced during all 3 push attempts; local commits retained.\n{output}")
+                delay = random.uniform(0.2, 1.0) * attempt
+                if time.monotonic() + delay >= self._push_deadline:
+                    raise ServiceError("Push reconciliation time budget exhausted; local commits retained")
+                if CANCELLED.wait(delay):
+                    raise ServiceError("Interrupted before push reconciliation; local commits retained")
+                if reconcile:
+                    reconcile()
+                else:
+                    self.integrate()
+                    self.check_repo()
+                    if self.direct:
+                        self.verify_direct_pending()
+                self.record(last_pull=stamp())
+        finally:
+            self._push_deadline = None
 
     def recover_large_files(self, output):
         prefix = self.remote_path.as_posix() + "/"
@@ -762,10 +836,7 @@ class Service:
                 self.record(last_pull=stamp())
                 uploading = bool(self.pending())
                 if uploading:
-                    code, output = self.git("push", "origin", f"HEAD:refs/heads/{self.args.branch}", check=False)
-                    if code:
-                        self.check_push_rejection(output)
-                        raise ServiceError(f"Push failed; local commits retained.\n{output}")
+                    self.push_with_retry()
                 self.finish_network(True)
                 self.record(result="success", sync_action="push" if uploading else "pull-only",
                             last_success=stamp(), pending_commits=self.pending(), last_error=None)
@@ -881,13 +952,7 @@ class Service:
                     self.verify_direct_pending()
                     uploading = bool(self.pending())
                     if uploading:
-                        # Existing repository hooks/configuration are preserved; ensure LFS upload explicitly.
-                        self.git("lfs", "push", "origin", self.args.branch)
-                        self._lfs_ready_for_push = True
-                        code, output = self.git("push", "origin", f"HEAD:refs/heads/{self.args.branch}", check=False)
-                        if code:
-                            self.check_push_rejection(output)
-                            raise ServiceError(f"Push failed; local commits retained.\n{output}")
+                        self.push_with_retry()
                     self.finish_network(True)
                     self.record(result="success", sync_action="push" if uploading else "pull-only",
                                 last_success=stamp(), pending_commits=self.pending(), last_error=None)

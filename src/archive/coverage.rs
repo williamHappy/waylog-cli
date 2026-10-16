@@ -53,11 +53,97 @@ pub struct Coverage {
     pub schema_version: u32,
     pub device_id: String,
     pub timezone: String,
+    #[serde(default = "default_retention")]
     pub retention: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_of_date: Option<String>,
+    #[serde(default)]
     pub sources: BTreeMap<String, Source>,
+    #[serde(default)]
     pub days: BTreeMap<String, Day>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_boolean"
+    )]
+    pub collection_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub daily_checks: BTreeMap<String, DailyCheck>,
+}
+
+fn default_retention() -> String {
+    "(previous-calendar-year-anniversary,today];Feb29-clamps-to-Feb28".into()
+}
+fn optional_string<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(d).map(Some)
+}
+fn optional_boolean<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<bool>, D::Error> {
+    bool::deserialize(d).map(Some)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DailySourceCheck {
+    pub result: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_string"
+    )]
+    pub stage: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_string"
+    )]
+    pub reason_code: Option<String>,
+}
+impl DailySourceCheck {
+    pub fn ok() -> Self {
+        Self {
+            result: "ok".into(),
+            stage: None,
+            reason_code: None,
+        }
+    }
+    pub fn failed(stage: &str, reason: &str) -> Self {
+        Self {
+            result: "failed".into(),
+            stage: Some(stage.into()),
+            reason_code: Some(reason.into()),
+        }
+    }
+    fn valid(&self) -> bool {
+        ["ok", "failed"].contains(&self.result.as_str())
+            && self
+                .stage
+                .as_deref()
+                .map(|s| ["collection", "read", "parse", "archive"].contains(&s))
+                .unwrap_or(true)
+            && self
+                .reason_code
+                .as_ref()
+                .map(|s| {
+                    !s.is_empty()
+                        && s.len() <= 96
+                        && s.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c))
+                })
+                .unwrap_or(true)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DailyCheck {
+    pub checked_at: String,
+    pub result: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sources: BTreeMap<String, DailySourceCheck>,
 }
 
 pub fn cutoff(today: NaiveDate) -> NaiveDate {
@@ -163,10 +249,26 @@ impl Coverage {
             as_of_date: None,
             sources: BTreeMap::new(),
             days: BTreeMap::new(),
+            collection_enabled: None,
+            daily_checks: BTreeMap::new(),
         }
     }
 
     pub fn validate_shape(&self, device: &str) -> Result<()> {
+        for (date, check) in &self.daily_checks {
+            let at = chrono::DateTime::parse_from_rfc3339(&check.checked_at)
+                .map_err(|_| WaylogError::Internal("Invalid daily checkedAt".into()))?;
+            if at
+                .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+                .date_naive()
+                .to_string()
+                != *date
+                || !["ok", "failed"].contains(&check.result.as_str())
+                || check.sources.values().any(|s| !s.valid())
+            {
+                return Err(WaylogError::Internal("Invalid daily check".into()));
+            }
+        }
         if self.schema_version != 1
             || self.device_id != device
             || self.timezone != "Asia/Shanghai"
@@ -218,6 +320,100 @@ impl Coverage {
             }
         }
         Ok(())
+    }
+
+    /// Actual cycle outcomes only; no archive digest, counts or inferred checks.
+    pub fn observe_daily(
+        &mut self,
+        at: &str,
+        updates: BTreeMap<String, DailySourceCheck>,
+    ) -> Result<bool> {
+        if updates.is_empty() {
+            return Ok(false);
+        }
+        if updates.values().any(|s| !s.valid()) {
+            return Err(WaylogError::Internal("Invalid source check".into()));
+        }
+        let instant = chrono::DateTime::parse_from_rfc3339(at)
+            .map_err(|_| WaylogError::Internal("Invalid check time".into()))?;
+        if self.daily_checks.values().any(|c| {
+            chrono::DateTime::parse_from_rfc3339(&c.checked_at)
+                .map(|t| t > instant)
+                .unwrap_or(true)
+        }) {
+            return Err(WaylogError::Internal("Check clock moved backwards".into()));
+        }
+        let today = instant
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .date_naive();
+        let key = today.to_string();
+        let mut known = BTreeMap::new();
+        for check in self.daily_checks.values() {
+            known.extend(check.sources.clone());
+        }
+        known.retain(|_, v: &mut DailySourceCheck| v.result == "failed");
+        if let Some(current) = self.daily_checks.get(&key) {
+            known.extend(current.sources.clone());
+        }
+        if let Some(day) = self.days.get_mut(&key) {
+            for (id, check) in &updates {
+                if let Some(old) = day.sources.get_mut(id) {
+                    if ["failed", "stopped"].contains(&old.status.as_str())
+                        || old.archive_status == "failed"
+                    {
+                        old.last_failure_reason = old.reason_code.clone();
+                        old.status = if check.result == "ok" {
+                            "unknown"
+                        } else {
+                            "failed"
+                        }
+                        .into();
+                        old.archive_status = if check.stage.as_deref() == Some("archive") {
+                            "failed"
+                        } else {
+                            "unknown"
+                        }
+                        .into();
+                        old.reason_code = Some(if check.result == "ok" {
+                            "operational_check_ok".into()
+                        } else {
+                            check
+                                .reason_code
+                                .clone()
+                                .unwrap_or_else(|| "collection_failed".into())
+                        });
+                        old.successful_ranges.clear();
+                    }
+                }
+            }
+        }
+        known.extend(updates);
+        let failed = known.iter().any(|(id, s)| {
+            s.result == "failed" && self.sources.get(id).map(|s| s.enabled).unwrap_or(true)
+        });
+        self.daily_checks.insert(
+            key,
+            DailyCheck {
+                checked_at: instant
+                    .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+                    .to_rfc3339(),
+                result: if failed { "failed" } else { "ok" }.into(),
+                sources: known,
+            },
+        );
+        self.collection_enabled.get_or_insert(true);
+        self.daily_checks.retain(|d, _| {
+            d.parse::<NaiveDate>()
+                .map(|d| d > cutoff(today) && d <= today)
+                .unwrap_or(false)
+        });
+        self.days.retain(|d, _| {
+            d.parse::<NaiveDate>()
+                .map(|d| d > cutoff(today) && d <= today)
+                .unwrap_or(false)
+        });
+        self.as_of_date = Some(today.to_string());
+        Ok(true)
     }
 
     pub fn merge(

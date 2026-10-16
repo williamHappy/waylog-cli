@@ -134,6 +134,7 @@ async fn main() {
                 interval_seconds,
                 coverage,
                 coverage_device,
+                daily_status_file,
                 sources,
                 #[cfg(target_os = "macos")]
                 instance_lock_file,
@@ -150,6 +151,7 @@ async fn main() {
                         interval_seconds,
                         coverage,
                         coverage_device,
+                        daily_status_file,
                         sources,
                         #[cfg(target_os = "macos")]
                         instance_lock_file,

@@ -506,8 +506,31 @@ class DirectSyncTests(unittest.TestCase):
             self.service.git("rebase", "origin/main")
         for call in mocked.call_args_list:
             command = call.args[0]
+            if "--get-all" in command:
+                continue
             self.assertIn(f"remote.origin.url={ssh}", command)
             self.assertIn(f"remote.origin.pushurl={ssh}", command)
+        self.assertEqual(git(self.service.repo, "remote", "get-url", "origin"), https)
+
+    def test_fetch_resolves_saved_https_origin_to_configured_ssh_without_network(self):
+        https = "https://github.com/williamHappy/i-raw-data.git"
+        ssh = "git@github.com:williamHappy/i-raw-data.git"
+        git(self.service.repo, "remote", "set-url", "origin", https)
+        self.service.args.remote = ssh
+        original_run = module.run
+        resolved = []
+
+        def inspect_fetch(command, **kwargs):
+            if "fetch" in command:
+                prefix = command[:command.index("fetch")]
+                code, url = original_run(prefix + ["remote", "get-url", "origin"], **kwargs)
+                resolved.append(url.strip())
+                return code, ""
+            return original_run(command, **kwargs)
+
+        with mock.patch.object(module, "run", side_effect=inspect_fetch):
+            self.service.git("fetch", "origin", "main")
+        self.assertEqual(resolved, [ssh])
         self.assertEqual(git(self.service.repo, "remote", "get-url", "origin"), https)
 
     def test_direct_unknown_archive_file_is_not_committed(self):
@@ -676,10 +699,12 @@ class RetryPolicyTests(unittest.TestCase):
                 module.Service.sync(fresh)
         self.assertEqual(self.push_calls, 1)
 
-    def test_non_fast_forward_is_not_retried_in_same_round(self):
-        self.failure_message = "rejected: non-fast-forward; fetch first"
-        self.fail_round()
-        self.assertEqual(self.push_calls, 1)
+    def test_non_fast_forward_retries_are_one_bounded_round(self):
+        self.failure_message = "!\tHEAD:refs/heads/main\t[rejected] (non-fast-forward)"
+        with mock.patch.object(module.CANCELLED, 'wait', return_value=False):
+            self.fail_round()
+        self.assertEqual(self.push_calls, 3)
+        self.assertEqual(self.service.network_state()['consecutive_failures'], 1)
 
     def test_github_size_rejection_pauses_after_first_attempt(self):
         self.failure_message = "remote: error: GH001: Large files detected. pre-receive hook declined"

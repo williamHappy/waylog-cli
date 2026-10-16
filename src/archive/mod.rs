@@ -1,3 +1,4 @@
+pub mod daily_status;
 pub mod browser;
 pub mod coverage;
 pub mod layout;
