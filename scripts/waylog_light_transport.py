@@ -135,7 +135,7 @@ def service_class(legacy):
                 raise legacy.ServiceError('Cannot inspect staged report')
             if code:
                 self.git('-c', 'user.name=' + self.args.git_name, '-c', 'user.email=' + self.args.git_email,
-                         'commit', '-m', 'chore(archive): collection status\n\nWaylog-Service-Archive: '
+                         'commit', '-m', f'chore(archive): 更新 {prefix} 归档\n\nWaylog-Service-Archive: '
                          + prefix + '\n' + marker)
             pending['commit'] = self.git('rev-parse', 'HEAD')[1]
             save()  # Frozen durably before any LFS or Git upload.
