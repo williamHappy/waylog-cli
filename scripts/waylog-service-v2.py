@@ -13,6 +13,8 @@ from pathlib import Path
 import tempfile
 import time
 from waylog_schedule import Schedule, ScheduleError
+from waylog_daily_status import checkpoint_options
+from waylog_light_transport import service_class
 
 _spec = importlib.util.spec_from_file_location('waylog_legacy', Path(__file__).with_name('waylog-service.py'))
 legacy = importlib.util.module_from_spec(_spec)
@@ -25,11 +27,17 @@ def load_configuration(path):
     if not isinstance(data, dict):
         raise ValueError('configuration must be an object')
     data = dict(data)
+    daily_status = data.pop('daily_status', {'enabled': False, 'checkpoint': {'enabled': False, 'time': '23:00'}})
+    if not isinstance(daily_status, dict) or set(daily_status) != {'enabled', 'checkpoint'} or type(daily_status['enabled']) is not bool:
+        raise ValueError('daily_status requires enabled boolean and checkpoint')
+    daily_status['checkpoint'] = checkpoint_options(daily_status['checkpoint'])
     schedule_spec = data.pop('sync_schedule', None)
     coverage_enabled = data.pop('coverage_enabled', False)
     collection_sources = data.pop('collection_sources', None)
     if collection_sources is not None and (not isinstance(collection_sources, list) or any(s not in ('codex', 'claude', 'gemini', 'chrome', 'atlas') for s in collection_sources) or len(set(collection_sources)) != len(collection_sources)):
         raise ValueError('collection_sources must be a unique list of supported source IDs')
+    if daily_status['enabled'] and coverage_enabled:
+        raise ValueError('daily_status and strict coverage_enabled are mutually exclusive')
     if type(coverage_enabled) is not bool:
         raise ValueError('coverage_enabled must be boolean')
     if schedule_spec is not None and 'interval' in data:
@@ -49,7 +57,7 @@ def load_configuration(path):
         values, _ = legacy.load_configuration(temporary)
     if schedule.mode == 'interval':
         values['interval'] = schedule.seconds
-    values.update(sync_schedule=schedule.spec, coverage_enabled=coverage_enabled, collection_sources=collection_sources,
+    values.update(daily_status=daily_status, sync_schedule=schedule.spec, coverage_enabled=coverage_enabled, collection_sources=collection_sources,
                   config_path=str(path), config_overrides={})
     return argparse.Namespace(**values)
 
@@ -154,6 +162,8 @@ class Service(legacy.Service):
         super().record(**updates)
 
     def dispatch(self):
+        if getattr(self.args, "daily_status", {}).get("enabled"):
+            return service_class(legacy)(self.args).dispatch()
         # Acquire before checking/claiming a slot, so overlapping native triggers
         # cannot start concurrent work or consume extra failure attempts.
         with self.lock('schedule-dispatch'):
@@ -191,12 +201,18 @@ class Service(legacy.Service):
             command.append('--no-browser')
         if self.args.collection_sources is not None:
             command += ['--sources', ','.join(self.args.collection_sources) or 'none']
+        if getattr(self.args, 'daily_status', {}).get('enabled'):
+            command += ['--daily-status-file', str(self.state / 'daily-status.json')]
         if self.args.coverage_enabled:
             command += ['--coverage', '--coverage-device', self.remote_path.name]
         return command
 
     def check_watch_support(self):
         super().check_watch_support()
+        if getattr(self.args, 'daily_status', {}).get('enabled'):
+            text = legacy.run([self.args.waylog, 'watch', '--help'])[1]
+            if '--daily-status-file' not in text:
+                raise legacy.ServiceError('Configured binary lacks --daily-status-file support')
         if self.args.coverage_enabled or self.args.collection_sources is not None:
             text = legacy.run([self.args.waylog, 'watch', '--help'])[1]
             if (self.args.coverage_enabled and '--coverage' not in text) or (self.args.collection_sources is not None and '--sources' not in text):
@@ -251,10 +267,14 @@ class Service(legacy.Service):
 
     def native_specs(self):
         result = {platform: self.schedule.native_spec(platform) for platform in ('macos', 'windows')}
+        light_daily = getattr(self.args, 'daily_status', {}).get('enabled') and self.args.daily_status['checkpoint']['enabled']
+        if light_daily:
+            for spec in result.values():
+                spec['pollSeconds'] = 60
         arguments = self.command_arguments('dispatch')
         result['macos']['launchd'] = {'ProgramArguments': arguments, 'StartInterval': result['macos']['pollSeconds'],
             'RunAtLoad': True, 'WorkingDirectory': str(self.state)}
-        if self.schedule.mode == 'interval' and self.schedule.seconds == 3600:
+        if self.schedule.mode == 'interval' and self.schedule.seconds == 3600 and not light_daily:
             result['macos']['launchd'].pop('StartInterval')
             result['macos']['launchd']['StartCalendarInterval'] = {'Minute': 0}
         result['macos']['watch'] = {'ProgramArguments': self.watch_spec() + ['--instance-lock-file', str(self.state / 'watch.lock'), '--service-log-file', str(self.state / 'logs/watch-output.log')], 'KeepAlive': True, 'ThrottleInterval': 30}
@@ -268,7 +288,7 @@ class Service(legacy.Service):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
-    parser.add_argument('command', choices=('config', 'native-spec', 'dispatch', 'dispatch-worker', 'watch-worker', 'sync', 'doctor', 'status'))
+    parser.add_argument('command', choices=('config', 'native-spec', 'dispatch', 'dispatch-worker', 'watch-worker', 'sync', 'doctor', 'status', 'collection-disable', 'collection-enable', 'resume-sync'))
     args = parser.parse_args()
     options = load_configuration(args.config)
     service = Service(options)
@@ -280,8 +300,17 @@ def main():
         print(service.dispatch())
     elif args.command in ('dispatch-worker', 'watch-worker'):
         raise SystemExit(service.worker(args.command.split('-')[0]))
+    elif args.command in ('collection-disable', 'collection-enable'):
+        if not options.daily_status['enabled']:
+            raise ValueError('Explicit control requires daily_status.enabled')
+        service_class(legacy)(options).control(args.command == 'collection-enable')
+    elif args.command == 'resume-sync':
+        service.resume_sync()
     elif args.command == 'sync':
-        service.sync()
+        if options.daily_status['enabled']:
+            print(service.dispatch())
+        else:
+            service.sync()
     else:
         getattr(service, args.command)()
 

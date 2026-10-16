@@ -20,6 +20,7 @@ pub struct WatchCoordination {
     pub git_dir: Option<PathBuf>,
     pub interval_seconds: u64,
     pub coverage: bool,
+    pub daily_status_file: Option<PathBuf>,
     pub coverage_device: Option<String>,
     pub sources: Option<Vec<String>>,
     #[cfg(target_os = "macos")]
@@ -40,6 +41,7 @@ pub async fn handle_watch(
         interval_seconds,
         coverage,
         coverage_device,
+        daily_status_file,
         sources,
         #[cfg(target_os = "macos")]
         instance_lock_file,
@@ -116,6 +118,11 @@ pub async fn handle_watch(
             "Coverage requires archive lock and device identity".into(),
         ));
     }
+    if let Some(file) = &daily_status_file {
+        if archive_lock_file.is_none() || file.starts_with(&archive_dir) || coverage {
+            return Err(WaylogError::Internal("Daily state must be outside archive and use its lock; strict coverage is separate".into()));
+        }
+    }
     let writer = ArchiveWriter::new(archive_dir.clone());
     let browser_writer = BrowserArchiveWriter::new(archive_dir.clone());
 
@@ -166,7 +173,30 @@ pub async fn handle_watch(
                 )? else {
                     continue;
                 };
-                path::ensure_dir_exists(&archive_dir)?;
+                if let Some(file) = &daily_status_file {
+                    if crate::archive::daily_status::read_local(file, &device).await?.collection_enabled == Some(false) {
+                        continue; // Explicit control only; no new check when collection is disabled.
+                    }
+                }
+                let mut daily_checks = std::collections::BTreeMap::new();
+                use crate::archive::coverage::DailySourceCheck;
+                if let Err(error) = path::ensure_dir_exists(&archive_dir) {
+                    if let Some(file) = &daily_status_file {
+                        let mut failures = std::collections::BTreeMap::new();
+                        for provider in &watched_providers {
+                            failures.insert(format!("session:{}", provider.name()), DailySourceCheck::failed("archive", "archive_directory_unavailable"));
+                        }
+                        for name in ["chrome", "atlas"] {
+                            if !no_browser && browser.as_ref().map(|b| format!("{b:?}").to_lowercase() == name).unwrap_or(true) {
+                                failures.insert(format!("browser:{name}"), DailySourceCheck::failed("archive", "archive_directory_unavailable"));
+                            }
+                        }
+                        crate::archive::daily_status::record_local(file, &device, &chrono::Utc::now().to_rfc3339(), std::collections::BTreeMap::new(), failures).await?;
+                        tracing::warn!("Archive directory unavailable: {error}");
+                        continue;
+                    }
+                    return Err(error);
+                }
                 let cycle_now = chrono::Utc::now();
                 let today = cycle_now.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).date_naive();
                 let targets = [today.pred_opt().unwrap(), today];
@@ -190,19 +220,23 @@ pub async fn handle_watch(
                     let session_paths = match provider.get_all_host_sessions().await {
                         Ok(paths) => paths,
                         Err(error) => {
-                            if !coverage { return Err(error); }
+                            if !coverage && daily_status_file.is_none() { return Err(error); }
+                            daily_checks.insert(id.clone(), DailySourceCheck::failed("collection", "source_enumeration_failed"));
                             for day in observations.values_mut() { day.insert(id.clone(), crate::archive::coverage::Observation::pending("failed", "source-enumeration-failed", "messages")); }
                             continue;
                         }
                     };
                     let mut counts = std::collections::BTreeMap::new();
                     let mut read_failed = false;
+                    let mut daily_error = None;
                     let mut archive_failed = false;
                     for session_path in session_paths {
                         let session = match provider.parse_session(&session_path).await {
                             Ok(session) => session,
                             Err(error) => {
                                 read_failed = true;
+                                daily_error.get_or_insert_with(|| DailySourceCheck::failed(
+                                    if matches!(&error, WaylogError::Json(_)) { "parse" } else { "read" }, "session_read_or_parse_failed"));
                                 tracing::warn!(
                                     "Skipping unreadable {} session {}: {}",
                                     provider.name(),
@@ -223,6 +257,7 @@ pub async fn handle_watch(
                             Ok(result) => result,
                             Err(error) => {
                                 archive_failed = true;
+                                daily_error.get_or_insert_with(|| DailySourceCheck::failed("archive", "session_archive_failed"));
                                 tracing::warn!(
                                     "Skipping failed archive export for {} session {}: {}",
                                     provider.name(),
@@ -232,7 +267,7 @@ pub async fn handle_watch(
                                 continue;
                             }
                         };
-                        if result.filtered_reason.is_none() {
+                        if coverage && result.filtered_reason.is_none() {
                             for message in &session.messages {
                                 let date = message.timestamp.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).date_naive();
                                 *counts.entry(date).or_insert(0u64) += 1;
@@ -252,6 +287,7 @@ pub async fn handle_watch(
                             unchanged += 1;
                         }
                     }
+                    daily_checks.insert(id.clone(), daily_error.unwrap_or_else(DailySourceCheck::ok));
                     for date in targets {
                         let mut observation = crate::archive::coverage::Observation::pending(
                             if read_failed || archive_failed { "failed" } else { "partial" },
@@ -271,18 +307,18 @@ pub async fn handle_watch(
                 }
 
                 if browser_enabled(browser.as_ref(), no_browser) {
-                    let collector = ChromiumHistoryCollector::new(browser.as_ref())?;
+                    let collector = ChromiumHistoryCollector::new(browser.as_ref());
                     let existing_result = read_browser_index_entries(&archive_dir).await;
                     let browser_index_failed = existing_result.is_err();
                     let existing_entries = match existing_result {
                         Ok(value) => value,
-                        Err(error) => { if !coverage { return Err(error); } std::collections::BTreeMap::new() }
+                        Err(error) => { if !coverage && daily_status_file.is_none() { return Err(error); } std::collections::BTreeMap::new() }
                     };
                     let since_by_profile =
                         latest_browser_visit_per_source_profile(&existing_entries);
-                    let collected = collector.collect_visits_since(&since_by_profile).await;
+                    let collected = match collector { Ok(collector) => collector.collect_visits_since(&since_by_profile).await, Err(error) => Err(error) };
                     if let Err(error) = &collected {
-                        if !coverage { return Err(WaylogError::Internal(error.to_string())); }
+                        if !coverage && daily_status_file.is_none() { return Err(WaylogError::Internal(error.to_string())); }
                     }
                     let mut collected = match collected {
                         Ok(value) => value,
@@ -293,6 +329,32 @@ pub async fn handle_watch(
                         output.warn(warning)?;
                     }
                     let summary_result = browser_writer.export_visits(&collected.visits, false).await;
+                    for source in &collected.source_reads {
+                        let value = if browser_index_failed {
+                            Some(DailySourceCheck::failed("archive", "browser_index_read_failed"))
+                        } else if source.status == "failed" {
+                            Some(DailySourceCheck::failed("read", "browser_read_failed"))
+                        } else if source.status == "success" {
+                            Some(if summary_result.is_err() { DailySourceCheck::failed("archive", "browser_archive_failed") } else { DailySourceCheck::ok() })
+                        } else { None };
+                        if let Some(value) = value { daily_checks.insert(source.id.clone(), value); }
+                    }
+                    for name in ["chrome", "atlas"] {
+                        let prefix = format!("browser:{name}:");
+                        let actual: Vec<_> = daily_checks.iter().filter(|(id, _)| id.starts_with(&prefix)).map(|(_, v)| v.clone()).collect();
+                        if !actual.is_empty() {
+                            let outcome = actual.iter().find(|v| v.result == "failed").cloned().unwrap_or_else(DailySourceCheck::ok);
+                            daily_checks.insert(format!("browser:{name}"), outcome);
+                        }
+                    }
+                    if collected.source_reads.is_empty() && !collected.warnings.is_empty() {
+                        for name in ["chrome", "atlas"] {
+                            if !no_browser && browser.as_ref().map(|b| format!("{b:?}").to_lowercase() == name).unwrap_or(true) {
+                                daily_checks.insert(format!("browser:{name}"), DailySourceCheck::failed("read", "browser_collection_failed"));
+                            }
+                        }
+                    }
+
                     for name in ["chrome", "atlas"] {
                         let id = format!("browser:{name}");
                         let selected = browser.as_ref().map(|b| format!("{b:?}").to_lowercase() == name).unwrap_or(true);
@@ -306,9 +368,9 @@ pub async fn handle_watch(
                             observations.get_mut(&date.to_string()).unwrap().insert(id.clone(), observation);
                         }
                     }
-                    let indexed = match read_browser_index_entries(&archive_dir).await {
+                    let indexed = match if coverage { read_browser_index_entries(&archive_dir).await } else { Ok(std::collections::BTreeMap::new()) } {
                         Ok(value) => value,
-                        Err(error) => { if !coverage { return Err(error); } std::collections::BTreeMap::new() }
+                        Err(error) => { if !coverage && daily_status_file.is_none() { return Err(error); } std::collections::BTreeMap::new() }
                     };
                     for source in &collected.source_reads {
                         roster.insert(source.id.clone(), crate::archive::coverage::Source { kind: "browser".into(), enabled: true, discovery: if source.status == "unknown" { "unavailable" } else { "found" }.into() });
@@ -334,7 +396,7 @@ pub async fn handle_watch(
                     }
                     let summary = match summary_result {
                         Ok(summary) => summary,
-                        Err(error) => { if !coverage { return Err(error); } crate::archive::browser::BrowserArchiveSummary::default() }
+                        Err(error) => { if !coverage && daily_status_file.is_none() { return Err(error); } crate::archive::browser::BrowserArchiveSummary::default() }
                     };
                     for warning in &summary.warnings {
                         output.warn(warning)?;
@@ -343,6 +405,15 @@ pub async fn handle_watch(
                     browser_unchanged = summary.unchanged_groups;
                 }
 
+                if let Some(file) = &daily_status_file {
+                    for name in ["chrome", "atlas"] {
+                        if !(!no_browser && browser.as_ref().map(|b| format!("{b:?}").to_lowercase() == name).unwrap_or(true)) {
+                            roster.insert(format!("browser:{name}"), crate::archive::coverage::Source { kind: "browser".into(), enabled: false, discovery: "not-selected".into() });
+                        }
+                    }
+                    crate::archive::daily_status::record_local(file, &device, &chrono::Utc::now().to_rfc3339(), roster.clone(), daily_checks).await?;
+                    crate::archive::coverage::save_runtime(archive_lock_file.as_deref().unwrap(), &device, "running", &chrono::Utc::now().to_rfc3339()).await?;
+                }
                 if coverage {
                     for name in ["chrome", "atlas"] {
                         let id = format!("browser:{name}");
@@ -388,6 +459,9 @@ pub async fn handle_watch(
                 }
             }
             _ = &mut stop => {
+                if daily_status_file.is_some() {
+                    crate::archive::coverage::save_runtime(archive_lock_file.as_deref().unwrap(), &device, "stopped", &chrono::Utc::now().to_rfc3339()).await?;
+                }
                 if coverage {
                     let now = chrono::Utc::now();
                     crate::archive::coverage::save_runtime(archive_lock_file.as_deref().unwrap(), &device, "stopped", &now.to_rfc3339()).await?;

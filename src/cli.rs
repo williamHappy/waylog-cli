@@ -129,6 +129,10 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',', conflicts_with_all = ["provider", "browser"])]
         sources: Option<Vec<String>>,
 
+        /// Local operational daily checks; no full-day audit or archive digest
+        #[arg(long, requires = "archive_lock_file", conflicts_with = "coverage")]
+        daily_status_file: Option<std::path::PathBuf>,
+
         /// Opt in to device-level coverage receipts (requires the archive lock)
         #[arg(long, requires = "archive_lock_file")]
         coverage: bool,

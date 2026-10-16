@@ -51,7 +51,7 @@ impl Provider for GeminiProvider {
         for entry in walkdir::WalkDir::new(&base_dir) {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(_) => continue,
+                Err(error) => return Err(std::io::Error::other(error).into()),
             };
 
             let path = entry.path();

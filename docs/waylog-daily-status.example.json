@@ -1,0 +1,16 @@
+{
+  "git_repo": "/fictional/i-raw-data",
+  "archive_dir": "/fictional/i-raw-data/ai/raw/wk-me",
+  "repo_path": "ai/raw/wk-me",
+  "state_dir": "/fictional/waylog-state",
+  "remote": "git@github.com:example/fictional.git",
+  "branch": "main",
+  "repo_mode": "full",
+  "pull_on_idle": true,
+  "coverage_enabled": false,
+  "sync_schedule": { "mode": "interval", "seconds": 3600 },
+  "daily_status": {
+    "enabled": false,
+    "checkpoint": { "enabled": false, "time": "23:00" }
+  }
+}

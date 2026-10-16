@@ -113,7 +113,8 @@ impl Provider for CodexProvider {
                 continue;
             }
 
-            if let Ok(event) = serde_json::from_str::<CodexEvent>(&line) {
+            let json: serde_json::Value = serde_json::from_str(&line)?;
+            if let Ok(event) = serde_json::from_value::<CodexEvent>(json) {
                 // Pick session metadata
                 if session_id.is_empty() {
                     session_id = file_path
@@ -198,7 +199,7 @@ impl CodexProvider {
         for entry in walker {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(_) => continue,
+                Err(error) => return Err(std::io::Error::other(error).into()),
             };
 
             let path = entry.path();
@@ -212,11 +213,8 @@ impl CodexProvider {
                 };
 
                 if matches_scope {
-                    if let Ok(metadata) = fs::metadata(path).await {
-                        if let Ok(modified) = metadata.modified() {
-                            candidates.push((path.to_path_buf(), modified));
-                        }
-                    }
+                    let metadata = fs::metadata(path).await?;
+                    candidates.push((path.to_path_buf(), metadata.modified()?));
                 }
             }
         }
@@ -391,7 +389,19 @@ struct CodexContent {
 #[cfg(test)]
 mod quality_tests {
     use super::*;
+    use crate::error::WaylogError;
     use crate::session_filter::session_title;
+
+    #[tokio::test]
+    async fn malformed_source_json_is_reported_and_empty_source_is_readable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("fictional.jsonl");
+        fs::write(&path, "{invalid\n").await.unwrap();
+        assert!(matches!(CodexProvider::new().parse_session(&path).await, Err(WaylogError::Json(_))));
+        fs::write(&path, "").await.unwrap();
+        assert!(CodexProvider::new().parse_session(&path).await.unwrap().messages.is_empty());
+        assert!(matches!(CodexProvider::new().parse_session(&dir.path().join("missing")).await, Err(WaylogError::Io(_))));
+    }
 
     async fn fixture(source: serde_json::Value, texts: &[&str]) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();

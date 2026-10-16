@@ -52,13 +52,13 @@ impl Provider for ClaudeProvider {
         for entry in walkdir::WalkDir::new(&base_dir) {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(_) => continue,
+                Err(error) => return Err(std::io::Error::other(error).into()),
             };
 
             let path = entry.path();
             if path.is_file()
                 && path.extension().and_then(|s| s.to_str()) == Some("jsonl")
-                && self.is_main_session(path).await.unwrap_or(false)
+                && self.is_main_session(path).await?
             {
                 let metadata = fs::metadata(path).await?;
                 let modified = metadata.modified()?;

@@ -293,7 +293,14 @@ class Service:
         if not self.direct:
             options += ["-c", f"core.hooksPath={(self.repo / '.git/hooks').as_posix()}", "-c", "commit.gpgsign=false"]
         elif args and args[0] in ("fetch", "push", "lfs", "rebase"):
-            # Use SSH for this command without changing the user's saved origin URL or pushurl.
+            # remote.*.url is multi-valued: -c adds a URL, and fetch still uses
+            # the first saved URL. Rewrite saved URLs for this process instead.
+            _, saved_urls = run([self.git_path, "-C", str(self.repo), "config", "--get-all",
+                                 "remote.origin.url"], timeout=self.args.timeout,
+                                check=False, env=self.env)
+            for saved_url in saved_urls.splitlines():
+                if saved_url and saved_url != self.args.remote:
+                    options += ["-c", f"url.{self.args.remote}.insteadOf={saved_url}"]
             options += ["-c", f"remote.origin.url={self.args.remote}", "-c", f"remote.origin.pushurl={self.args.remote}"]
         if args and args[0] in ("fetch", "push", "lfs") and not (args[0] == "lfs" and args[1:] == ("version",)):
             self.begin_network()
