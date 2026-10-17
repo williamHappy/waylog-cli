@@ -1,3 +1,4 @@
+mod codex_title;
 pub mod daily_status;
 pub mod browser;
 pub mod coverage;
@@ -51,8 +52,20 @@ impl ArchiveWriter {
         source_path: &Path,
         raw_extension: &str,
     ) -> Result<ArchiveExportResult> {
-        let title = session_filter::session_title(session);
         let stable_key = format!("{}:{}", session.provider, session.session_id);
+        let mut index_entries = read_session_index_entries(&self.archive_dir).await?;
+        let title = if session.provider == "codex" {
+            if let Some(existing) = index_entries.get(&stable_key) {
+                // Naming changes apply only on first export, never to historical entries.
+                existing.title.clone()
+            } else {
+                codex_title::read(source_path)
+                    .await
+                    .unwrap_or_else(|| session_filter::session_title(session))
+            }
+        } else {
+            session_filter::session_title(session)
+        };
         let suffix = format!("{:x}", Sha256::digest(stable_key.as_bytes()));
         let readable_base = layout::build_readable_base(
             &session.started_at.to_rfc3339(),
@@ -81,7 +94,6 @@ impl ArchiveWriter {
             .unwrap_or_else(|| crate::utils::time::format_local_rfc3339(&session.updated_at));
 
         let markdown = crate::exporter::generate_markdown(session);
-        let mut index_entries = read_session_index_entries(&self.archive_dir).await?;
         let codex_source = if session.provider == "codex" {
             crate::providers::codex::read_source_kind(source_path).await?
         } else {
@@ -422,6 +434,94 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[tokio::test]
+    async fn codex_names_only_affect_first_export_and_preserve_existing_paths() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("codex");
+        let sources = home.join("sessions/2026/10/17");
+        fs::create_dir_all(&sources).await.unwrap();
+        let source = sources.join("rollout-filename.jsonl");
+        fs::write(&source, "{\"type\":\"session_meta\",\"timestamp\":\"2026-10-17T01:00:00Z\",\"payload\":{\"id\":\"thread-1\"}}\n").await.unwrap();
+        let index = home.join("session_index.jsonl");
+        let writer = ArchiveWriter::new(temp.path().join("archive"));
+        let session = test_session();
+
+        // First archive falls back when Codex has not named the conversation yet.
+        let fallback = writer
+            .export_session(&session, &source, "jsonl")
+            .await
+            .unwrap();
+        let original = super::read_session_index_entries(&writer.archive_dir)
+            .await
+            .unwrap();
+        assert_eq!(original["codex:session-1"].title, "设计统一归档目录结构");
+        fs::write(
+            &index,
+            "{\"id\":\"thread-1\",\"thread_name\":\"Codex 界面标题\"}\n",
+        )
+        .await
+        .unwrap();
+        let existing = writer
+            .export_session(&session, &source, "jsonl")
+            .await
+            .unwrap();
+        assert!(!existing.written);
+        assert_eq!(existing.paths, fallback.paths);
+        assert_eq!(
+            super::read_session_index_entries(&writer.archive_dir)
+                .await
+                .unwrap(),
+            original
+        );
+
+        // A newly archived entry uses the Codex name without changing its stable identity.
+        let mut new_session = session.clone();
+        new_session.session_id = "another-rollout-filename".into();
+        let named = writer
+            .export_session(&new_session, &source, "jsonl")
+            .await
+            .unwrap();
+        assert!(named
+            .paths
+            .markdown_path
+            .to_str()
+            .unwrap()
+            .contains("codex-界面标题"));
+        let entries = super::read_session_index_entries(&writer.archive_dir)
+            .await
+            .unwrap();
+        assert_eq!(
+            entries["codex:another-rollout-filename"].title,
+            "Codex 界面标题"
+        );
+
+        // Ordinary content updates retain the archived name even if Codex renames it.
+        fs::write(
+            &index,
+            "{\"id\":\"thread-1\",\"thread_name\":\"后来重命名\"}\n",
+        )
+        .await
+        .unwrap();
+        new_session.messages[1].content.push_str("新增正文");
+        let updated = writer
+            .export_session(&new_session, &source, "jsonl")
+            .await
+            .unwrap();
+        assert!(updated.written);
+        assert_eq!(updated.paths, named.paths);
+        let entries = super::read_session_index_entries(&writer.archive_dir)
+            .await
+            .unwrap();
+        assert_eq!(
+            entries["codex:another-rollout-filename"].title,
+            "Codex 界面标题"
+        );
+        assert!(fs::read_to_string(updated.paths.markdown_path)
+            .await
+            .unwrap()
+            .contains("新增正文"));
     }
 
     #[tokio::test]

@@ -89,6 +89,8 @@ waylog pull
 
 Scans local provider storage on the current machine and exports sessions into a flat archive view under `sessions/`, with readable filenames plus `.raw.*` companions and centralized indexes under `indexes/`.
 
+New Codex archive entries use the local Codex conversation name for filenames and index titles, falling back to the first nonempty line of the first user message when unavailable. Existing Codex entries keep their archived names and filenames, including after a rename in Codex. Session filtering still uses the original message-based rules.
+
 WayLog now exports browser history into `browser-history/` by default alongside AI sessions. It currently supports Chrome and ChatGPT Atlas on macOS, plus Chrome on Windows. Browser history collection copies locked History databases to temp files before reading them and captures visit-level history records only. It does not capture page-level clickstream or tab focus behavior.
 
 Browser URLs hide known sensitive parameter values as `REDACTED`, while ordinary

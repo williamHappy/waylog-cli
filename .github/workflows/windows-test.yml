@@ -49,7 +49,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $exe = (Resolve-Path 'target/release/waylog.exe').Path
           $version = (& $exe --version | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or $version -ne 'waylog 0.2.10') { throw 'Wrong binary version' }
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'waylog 0.2.11') { throw 'Wrong binary version' }
           $helpText = (& $exe watch --help | Out-String)
           if ($LASTEXITCODE -ne 0) { throw 'watch help failed' }
           foreach ($flag in @('--archive-lock-file', '--git-dir', '--interval-seconds', '--daily-status-file', '--coverage', '--coverage-device', '--sources')) {
@@ -59,13 +59,13 @@ jobs:
       - name: Package test bundle
         shell: pwsh
         run: |
-          $bundle = 'waylog-0.2.10-windows-x64-test'
+          $bundle = 'waylog-0.2.11-windows-x64-test'
           New-Item -ItemType Directory -Path "$bundle/scripts", "$bundle/docs" | Out-Null
           Copy-Item target/release/waylog.exe "$bundle/waylog.exe"
           Copy-Item scripts/waylog-service.py, scripts/waylog-service.windows.ps1, scripts/waylog-service.windows.example.json, scripts/waylog-service-v2.py, scripts/waylog_schedule.py, scripts/waylog_daily_status.py, scripts/waylog_light_transport.py "$bundle/scripts/"
           Copy-Item docs/waylog-service-windows.md, docs/waylog-windows-test.md, docs/waylog-coverage-v2.md, docs/coverage-v1.schema.json, docs/waylog-daily-status.md, docs/waylog-daily-status.example.json "$bundle/docs/"
           $manifest = [ordered]@{
-            version = '0.2.10'
+            version = '0.2.11'
             commit = '${{ github.sha }}'
             binary_sha256 = (Get-FileHash "$bundle/waylog.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
             checks = @('Windows Rust tests', 'release build', 'CLI flags', 'PowerShell 5.1 JSONC config')
@@ -74,7 +74,7 @@ jobs:
           Compress-Archive -Path $bundle -DestinationPath "$bundle.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: waylog-0.2.10-windows-x64-test
-          path: waylog-0.2.10-windows-x64-test.zip
+          name: waylog-0.2.11-windows-x64-test
+          path: waylog-0.2.11-windows-x64-test.zip
           retention-days: 14
           if-no-files-found: error
