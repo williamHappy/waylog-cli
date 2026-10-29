@@ -265,6 +265,10 @@ class Reporter:
                         raise
                     return 'pull-only'
                 return 'idle'
+            # Finish a reserved local LFS transaction before the network gate.
+            # This also recovers a crash while GH001's protective pause was set.
+            if hasattr(t, 'recover_pending'):
+                t.recover_pending(pending, lambda: self.save(state))
             if not t.allowed():
                 self.save(state)
                 return 'deferred'

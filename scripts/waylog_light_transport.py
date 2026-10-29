@@ -9,6 +9,7 @@ import time
 from waylog_daily_status import (Reporter, atomic_json, local_document, merge_receipt,
                                 read_json, set_enabled, status_warning, StatusUnavailable, validate)
 from waylog_schedule import Schedule
+from waylog_frozen_lfs import FrozenLFS
 
 
 def service_class(legacy):
@@ -141,9 +142,21 @@ def service_class(legacy):
             save()  # Frozen durably before any LFS or Git upload.
 
         def recover_large_files(self, output):
-            # A frozen batch must retain its original commit, even for a real
-            # GH001 rejection. Legacy automatic LFS migration rewrites history.
-            self.record(lfs_recovery='needs-manual-review', frozen_report_preserved=True)
+            context = getattr(self, '_frozen_lfs_context', None)
+            if context is None:
+                raise legacy.ServiceError('Missing frozen batch recovery context')
+            pending, save = context
+            try:
+                FrozenLFS(self, pending, save).prepare(output)
+            except RuntimeError as error:
+                raise legacy.ServiceError(str(error)) from error
+
+        def recover_pending(self, pending, save):
+            if pending.get('lfsRecovery'):
+                try:
+                    FrozenLFS(self, pending, save).resume()
+                except RuntimeError as error:
+                    raise legacy.ServiceError(str(error)) from error
 
         def frozen_tree(self, commit):
             return self.git('rev-parse', commit + ':' + self.remote_path.as_posix())[1]
@@ -205,9 +218,13 @@ def service_class(legacy):
             self.verify_direct_pending()
             self.recover_integration(commit, pending, save)
             self.record(upload_result='in-flight')
-            uploaded = self.push_with_retry(
-                reconcile=lambda: self.merge_remote_report(commit, pending, save),
-                revision=lambda: pending.get('uploadCommit', commit))
+            self._frozen_lfs_context = (pending, save)
+            try:
+                uploaded = self.push_with_retry(
+                    reconcile=lambda: self.merge_remote_report(commit, pending, save),
+                    revision=lambda: pending.get('uploadCommit', commit))
+            finally:
+                self._frozen_lfs_context = None
             if not pending.get('statusSkipped'):
                 self.record(status_warning=None)
             self.record(last_push=legacy.stamp(), last_success=legacy.stamp(),

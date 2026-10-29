@@ -310,6 +310,9 @@ class DirectSyncTests(unittest.TestCase):
         checkout = self.root / "existing-repo"
         subprocess.check_call(["git", "clone", str(self.remote), str(checkout)],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Rebase needs a committer identity even when global config is isolated.
+        git(checkout, "config", "user.name", "Test")
+        git(checkout, "config", "user.email", "test@example.invalid")
         self.source = checkout / "ai/raw/wk-me"
         self.source.mkdir(parents=True)
         (self.source / "sessions").mkdir()

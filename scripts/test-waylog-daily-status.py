@@ -428,6 +428,7 @@ class ConfigurationTests(unittest.TestCase):
         copy_line=next(line for line in workflow.splitlines() if 'Copy-Item scripts/waylog-service.py,' in line)
         self.assertIn('scripts/waylog_daily_status.py',copy_line)
         self.assertIn('scripts/waylog_light_transport.py',copy_line)
+        self.assertIn('scripts/waylog_frozen_lfs.py',copy_line)
 
     def test_default_off_and_reject_strict_light_combination(self):
         self.config.pop('daily_status');options=self.load();self.assertFalse(options.daily_status['enabled'])

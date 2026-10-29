@@ -865,7 +865,9 @@ class Service:
                 local_names = [name for name in self.git("diff", "--name-only", "-z",
                                                         parents[1], commit)[1].split("\0") if name]
                 if ancestor == 0 and own_changed == 0 and all(
-                        name.startswith(prefix) for name in local_names):
+                        name.startswith(prefix) or name == ".gitattributes" for name in local_names):
+                    if ".gitattributes" in local_names:
+                        self.verify_lfs_attributes(commit, parents[1])
                     continue
                 raise ServiceError("Merge includes unpublished history or additional edits; reconcile it manually first")
             message = self.git("show", "-s", "--format=%B", commit)[1].splitlines()

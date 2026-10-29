@@ -39,6 +39,8 @@ jobs:
         run: python scripts/test-waylog-daily-status.py
       - name: Test concurrent push recovery on native Windows
         run: python scripts/test-waylog-push-races.py
+      - name: Test frozen batch LFS recovery on native Windows
+        run: python scripts/test-waylog-frozen-lfs.py
       - name: Test on native Windows
         run: cargo test --locked --all-features
       - name: Build Windows executable
@@ -62,7 +64,7 @@ jobs:
           $bundle = 'waylog-0.2.11-windows-x64-test'
           New-Item -ItemType Directory -Path "$bundle/scripts", "$bundle/docs" | Out-Null
           Copy-Item target/release/waylog.exe "$bundle/waylog.exe"
-          Copy-Item scripts/waylog-service.py, scripts/waylog-service.windows.ps1, scripts/waylog-service.windows.example.json, scripts/waylog-service-v2.py, scripts/waylog_schedule.py, scripts/waylog_daily_status.py, scripts/waylog_light_transport.py "$bundle/scripts/"
+          Copy-Item scripts/waylog-service.py, scripts/waylog-service.windows.ps1, scripts/waylog-service.windows.example.json, scripts/waylog-service-v2.py, scripts/waylog_schedule.py, scripts/waylog_daily_status.py, scripts/waylog_light_transport.py, scripts/waylog_frozen_lfs.py "$bundle/scripts/"
           Copy-Item docs/waylog-service-windows.md, docs/waylog-windows-test.md, docs/waylog-coverage-v2.md, docs/coverage-v1.schema.json, docs/waylog-daily-status.md, docs/waylog-daily-status.example.json "$bundle/docs/"
           $manifest = [ordered]@{
             version = '0.2.11'
